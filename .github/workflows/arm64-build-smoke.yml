@@ -1,0 +1,66 @@
+name: arm64-build-smoke
+
+# Native ARM64 compile smoke. This is not VM-backed validation; the real
+# ARM64 compatibility proof remains .github/workflows/multiarch-compatibility.yml
+# on an ARM64 self-hosted KVM runner.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "pkg/**"
+      - "examples/**"
+      - "validator/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - ".github/workflows/arm64-build-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm make pkg-config libbpf-dev libelf-dev zlib1g-dev libzstd-dev
+
+      - name: Build Go CLI
+        run: make build
+
+      - name: Build C validator dynamically
+        run: make validator-dynamic
+
+      - name: Build + stage static validator for arm64 (hostload embed)
+        # uname -m is aarch64 here, so LIB_EMBED_ARCH resolves to arm64 and the
+        # binary lands at pkg/bpfcompat/validators/bpfcompat-validator-arm64.
+        run: make pkg-embed-validator
+
+      - name: Build embeddable library (hostload, arm64)
+        run: make lib-hostload
+
+      - name: Run hostload library tests (arm64)
+        run: go test -tags hostload ./pkg/bpfcompat/...
+
+      - name: Upload arm64 validator (for multi-arch embed / release)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bpfcompat-validator-arm64
+          path: pkg/bpfcompat/validators/bpfcompat-validator-arm64
+          if-no-files-found: error
+
+      - name: Build ARM64 BPF examples
+        run: make examples-arm64
+
+      - name: Run cheap Go tests
+        run: go test ./cmd/... ./internal/... ./pkg/...

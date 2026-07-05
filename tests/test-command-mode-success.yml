@@ -1,0 +1,64 @@
+name: Test command mode success path
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a fake bpfcompat binary that records its args and exits 0
+      - name: Create fake bpfcompat binary
+        run: |
+          mkdir -p ./bin
+          cat > ./bin/bpfcompat << 'EOF'
+          #!/bin/bash
+          echo "fake bpfcompat called with: $*"
+          # Write a minimal JSON report if --out is specified
+          for i in "$@"; do
+            if [[ "$prev" == "--out" ]]; then
+              mkdir -p "$(dirname "$i")"
+              echo '{"targets":[],"pass":true}' > "$i"
+            fi
+            prev="$i"
+          done
+          exit 0
+          EOF
+          chmod +x ./bin/bpfcompat
+
+      # Create a fake matrix file
+      - name: Create fake matrix file
+        run: |
+          cat > ./matrix.yaml << 'EOF'
+          kernels:
+            - version: "5.15"
+          EOF
+
+      - name: Run action in command mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          command: "echo hello"
+          matrix: "./matrix.yaml"
+          out: "reports/report.json"
+
+      - name: Assert action succeeded
+        run: |
+          echo "outcome: ${{ steps.action.outcome }}"
+          if [ "${{ steps.action.outcome }}" != "success" ]; then
+            echo "FAIL: expected action to succeed in command mode"
+            exit 1
+          fi
+          echo "PASS: action succeeded in command mode"
+
+      - name: Assert report file was created
+        run: |
+          if [ ! -f "reports/report.json" ]; then
+            echo "FAIL: expected report file reports/report.json to be created"
+            exit 1
+          fi
+          echo "PASS: report file exists"
+          cat reports/report.json
