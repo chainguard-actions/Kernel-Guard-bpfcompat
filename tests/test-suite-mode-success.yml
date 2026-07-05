@@ -1,0 +1,60 @@
+name: Test suite mode success
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake binary that records its arguments and exits successfully
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/bash
+          echo "fake bpfcompat called with: $*"
+          # Write a fake suite output JSON so the action doesn't complain
+          if [[ "$1" == "suite" ]]; then
+            for i in "$@"; do
+              if [[ "$prev" == "--out" ]]; then
+                mkdir -p "$(dirname "$i")"
+                echo '{"suites":[]}' > "$i"
+              fi
+              prev="$i"
+            done
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal suite YAML file
+          cat > "$GITHUB_WORKSPACE/suite.yaml" << 'SUITE'
+          suites:
+            - name: example
+              artifact: example.bpf.o
+              matrix: matrix.yaml
+          SUITE
+
+      - name: Run action in suite mode (expect success)
+        id: action
+        uses: .
+        continue-on-error: true
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          suite: "suite.yaml"
+          suite-out: "reports/bpfcompat-suite.json"
+          suite-markdown: "reports/bpfcompat-suite.md"
+
+      - name: Assert action succeeded in suite mode
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed in suite mode with valid suite file"
+            exit 1
+          fi
+          echo "PASS: action correctly succeeded in suite mode"
