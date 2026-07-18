@@ -1,0 +1,78 @@
+name: Test single artifact mode success
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, artifact, and matrix
+        run: |
+          mkdir -p tests/fixtures/bin
+          cat > tests/fixtures/bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          # Fake bpfcompat: record args and exit 0
+          echo "fake bpfcompat called with: $*"
+          # If called as 'test', create the output file if --out is given
+          mode=""
+          out_file=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out_file="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out_file" ]; then
+            mkdir -p "$(dirname "$out_file")"
+            echo '{"status":"pass","targets":[]}' > "$out_file"
+          fi
+          exit 0
+          EOF
+          chmod +x tests/fixtures/bin/bpfcompat
+
+          # Create a minimal fake .bpf.o artifact
+          mkdir -p tests/fixtures/artifacts
+          echo "fake eBPF object" > tests/fixtures/artifacts/test.bpf.o
+
+          # Create a minimal matrix YAML
+          mkdir -p tests/fixtures/matrices
+          cat > tests/fixtures/matrices/test-matrix.yaml << 'EOF'
+          targets: []
+          EOF
+
+          # Ensure output directory exists
+          mkdir -p tests/fixtures/reports
+
+      - name: Run action in single-artifact mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          binary: "tests/fixtures/bin/bpfcompat"
+          artifact: "tests/fixtures/artifacts/test.bpf.o"
+          matrix: "tests/fixtures/matrices/test-matrix.yaml"
+          out: "tests/fixtures/reports/report.json"
+          timeout: "30s"
+          concurrency: "1"
+
+      - name: Assert action succeeded
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed in single-artifact mode, but got: $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: action succeeded in single-artifact mode"
+
+      - name: Assert report file was created
+        run: |
+          if [ ! -f "tests/fixtures/reports/report.json" ]; then
+            echo "FAIL: expected report file to be created at tests/fixtures/reports/report.json"
+            exit 1
+          fi
+          echo "PASS: report file exists"
+          cat tests/fixtures/reports/report.json
