@@ -1,0 +1,67 @@
+name: Test single artifact mode with fake binary
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, artifact, and matrix
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that accepts 'test' subcommand and creates the output file
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'BPFEOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Parse --out argument and create a fake JSON report
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              mkdir -p "$(dirname "$arg")"
+              echo '{"status":"pass","targets":[]}' > "$arg"
+            fi
+            prev="$arg"
+          done
+          exit 0
+          BPFEOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a fake .bpf.o artifact
+          echo "fake bpf object" > "$GITHUB_WORKSPACE/test.bpf.o"
+
+          # Create a minimal matrix YAML
+          cat > "$GITHUB_WORKSPACE/matrix.yaml" << 'EOF'
+          targets:
+            - name: test-target
+              kernel: "6.1"
+          EOF
+
+      - name: Run action in single-artifact mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "test.bpf.o"
+          matrix: "matrix.yaml"
+          out: "reports/out.json"
+          timeout: "30s"
+          concurrency: "1"
+
+      - name: Assert action succeeded and report was created
+        run: |
+          echo "outcome: ${{ steps.action.outcome }}"
+          if [ "${{ steps.action.outcome }}" != "success" ]; then
+            echo "FAIL: expected action to succeed"
+            exit 1
+          fi
+          if [ ! -f "$GITHUB_WORKSPACE/reports/out.json" ]; then
+            echo "FAIL: expected report file to be created at reports/out.json"
+            exit 1
+          fi
+          echo "Report contents:"
+          cat "$GITHUB_WORKSPACE/reports/out.json"
+          echo "PASS: action succeeded and report was created"

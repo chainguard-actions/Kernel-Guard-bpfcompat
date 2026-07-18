@@ -1,0 +1,72 @@
+name: Test suite mode with fake binary
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that accepts 'suite' subcommand and creates the output file
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'BPFEOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Parse --out argument and create a fake JSON suite summary
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              mkdir -p "$(dirname "$arg")"
+              echo '{"status":"pass","suites":[]}' > "$arg"
+            fi
+            if [ "$prev" = "--markdown" ]; then
+              mkdir -p "$(dirname "$arg")"
+              echo "# bpfcompat Suite Results" > "$arg"
+              echo "All suites passed." >> "$arg"
+            fi
+            prev="$arg"
+          done
+          exit 0
+          BPFEOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal suite YAML
+          mkdir -p "$GITHUB_WORKSPACE/suites"
+          cat > "$GITHUB_WORKSPACE/suites/test-suite.yaml" << 'EOF'
+          name: test-suite
+          suites:
+            - name: example
+              artifact: test.bpf.o
+              matrix: matrix.yaml
+          EOF
+
+      - name: Run action in suite mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          suite: "suites/test-suite.yaml"
+          suite-out: "reports/bpfcompat-suite.json"
+          suite-markdown: "reports/bpfcompat-suite.md"
+          timeout: "30s"
+          concurrency: "1"
+
+      - name: Assert action succeeded and suite output was created
+        run: |
+          echo "outcome: ${{ steps.action.outcome }}"
+          if [ "${{ steps.action.outcome }}" != "success" ]; then
+            echo "FAIL: expected action to succeed in suite mode"
+            exit 1
+          fi
+          if [ ! -f "$GITHUB_WORKSPACE/reports/bpfcompat-suite.json" ]; then
+            echo "FAIL: expected suite JSON output at reports/bpfcompat-suite.json"
+            exit 1
+          fi
+          echo "Suite JSON contents:"
+          cat "$GITHUB_WORKSPACE/reports/bpfcompat-suite.json"
+          echo "PASS: action succeeded in suite mode and output was created"
