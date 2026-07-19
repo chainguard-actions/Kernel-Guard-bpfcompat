@@ -1,0 +1,71 @@
+name: Test single artifact mode basic usage
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, dummy artifact, and dummy matrix
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Create a fake bpfcompat that records its arguments and exits 0
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # If called with 'test' subcommand, create the output file
+          if [ "$1" = "test" ]; then
+            for i in "$@"; do
+              prev="$cur"
+              cur="$i"
+              if [ "$prev" = "--out" ]; then
+                mkdir -p "$(dirname "$cur")"
+                echo '{"status":"ok","targets":[]}' > "$cur"
+              fi
+            done
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a dummy artifact file
+          echo "dummy bpf object" > "$GITHUB_WORKSPACE/dummy.bpf.o"
+
+          # Create a dummy matrix file
+          cat > "$GITHUB_WORKSPACE/matrix.yaml" << 'YAML'
+          targets:
+            - kernel: "6.1"
+          YAML
+
+      - name: Run action in single-artifact mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "dummy.bpf.o"
+          matrix: "matrix.yaml"
+          out: "reports/bpfcompat-out.json"
+        continue-on-error: true
+
+      - name: Assert action succeeded
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed in single-artifact mode"
+            exit 1
+          fi
+          echo "PASS: action succeeded in single-artifact mode"
+
+      - name: Assert output report was created
+        run: |
+          if [ ! -f "$GITHUB_WORKSPACE/reports/bpfcompat-out.json" ]; then
+            echo "FAIL: expected output report not found at reports/bpfcompat-out.json"
+            exit 1
+          fi
+          echo "PASS: output report exists"
+          cat "$GITHUB_WORKSPACE/reports/bpfcompat-out.json"

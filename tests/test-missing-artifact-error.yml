@@ -11,7 +11,7 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/bin"
           cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
-          #!/bin/bash
+          #!/bin/sh
           echo "fake bpfcompat called with: $*"
           exit 0
           EOF
@@ -20,16 +20,13 @@ jobs:
       - name: Run action without artifact (expect failure)
         id: action
         uses: .
-        continue-on-error: true
         with:
           build: "false"
           prebuilt: "never"
-          binary: "bin/bpfcompat"
-          matrix: "some-matrix.yaml"
-          out: "reports/out.json"
-          # artifact intentionally omitted
+          binary: "./bin/bpfcompat"
+        continue-on-error: true
 
-      - name: Assert action failed with missing artifact error
+      - name: Assert action failed due to missing artifact
         env:
           OUTCOME: ${{ steps.action.outcome }}
         run: |
@@ -38,4 +35,4 @@ jobs:
             echo "FAIL: expected action to fail when artifact is not provided"
             exit 1
           fi
-          echo "PASS: action correctly failed when artifact was not provided"
+          echo "PASS: action correctly failed when artifact is missing"

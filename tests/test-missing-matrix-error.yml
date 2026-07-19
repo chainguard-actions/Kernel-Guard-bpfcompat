@@ -1,0 +1,41 @@
+name: Test missing matrix error
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and dummy artifact
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+          # Create a dummy artifact file
+          echo "dummy bpf object" > "$GITHUB_WORKSPACE/dummy.bpf.o"
+
+      - name: Run action with artifact but no matrix (expect failure)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "dummy.bpf.o"
+        continue-on-error: true
+
+      - name: Assert action failed due to missing matrix
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected action to fail when matrix is not provided"
+            exit 1
+          fi
+          echo "PASS: action correctly failed when matrix is missing"
