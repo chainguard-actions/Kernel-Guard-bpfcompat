@@ -1,0 +1,65 @@
+name: Test basic single-artifact mode success
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, dummy artifact, and matrix
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat binary that succeeds
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Write a minimal JSON report if --out is specified
+          out=""
+          prev=""
+          for arg in "$@"; do
+            case "$prev" in
+              --out) out="$arg" ;;
+            esac
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"status":"pass","targets":[]}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a dummy .bpf.o artifact (just needs to exist as a file)
+          echo "dummy eBPF object" > "$GITHUB_WORKSPACE/dummy.bpf.o"
+
+          # Create a minimal matrix YAML
+          mkdir -p "$GITHUB_WORKSPACE/matrices"
+          cat > "$GITHUB_WORKSPACE/matrices/test-matrix.yaml" << 'YAML'
+          targets:
+            - name: ubuntu-22.04
+              kernel: "5.15"
+          YAML
+
+      - name: Run action in single-artifact mode (expect success)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "dummy.bpf.o"
+          matrix: "matrices/test-matrix.yaml"
+          out: "reports/out.json"
+        continue-on-error: true
+
+      - name: Assert action succeeded
+        run: |
+          echo "outcome: ${{ steps.action.outcome }}"
+          if [ "${{ steps.action.outcome }}" != "success" ]; then
+            echo "FAIL: expected action to succeed with valid inputs and fake binary"
+            exit 1
+          fi
+          echo "PASS: action succeeded with valid inputs"

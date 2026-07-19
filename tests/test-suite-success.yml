@@ -1,0 +1,62 @@
+name: Test suite mode success
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat binary that succeeds and writes suite output
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Write a minimal JSON suite report if --out is specified
+          out=""
+          prev=""
+          for arg in "$@"; do
+            case "$prev" in
+              --out) out="$arg" ;;
+            esac
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"status":"pass","suites":[]}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal suite YAML
+          mkdir -p "$GITHUB_WORKSPACE/suites"
+          cat > "$GITHUB_WORKSPACE/suites/test-suite.yaml" << 'YAML'
+          name: test-suite
+          entries:
+            - artifact: dummy.bpf.o
+              matrix: matrices/test-matrix.yaml
+          YAML
+
+      - name: Run action in suite mode (expect success)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          suite: "suites/test-suite.yaml"
+          suite-out: "reports/bpfcompat-suite.json"
+        continue-on-error: true
+
+      - name: Assert action succeeded in suite mode
+        run: |
+          echo "outcome: ${{ steps.action.outcome }}"
+          if [ "${{ steps.action.outcome }}" != "success" ]; then
+            echo "FAIL: expected action to succeed in suite mode with valid suite file and fake binary"
+            exit 1
+          fi
+          echo "PASS: action succeeded in suite mode"

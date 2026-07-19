@@ -1,0 +1,81 @@
+name: Test suite mode success
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary that handles suite command
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/fake-bin"
+          cat > "$GITHUB_WORKSPACE/fake-bin/bpfcompat" << 'BPFEOF'
+          #!/bin/bash
+          echo "fake bpfcompat called with: $*"
+          # Parse --out argument and write a fake JSON report
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --out)
+                out_path="$2"
+                shift 2
+                ;;
+              --markdown)
+                md_path="$2"
+                shift 2
+                ;;
+              *)
+                shift
+                ;;
+            esac
+          done
+          if [[ -n "${out_path:-}" ]]; then
+            mkdir -p "$(dirname "$out_path")"
+            echo '{"status":"pass","suites":[]}' > "$out_path"
+          fi
+          if [[ -n "${md_path:-}" ]]; then
+            mkdir -p "$(dirname "$md_path")"
+            echo "# bpfcompat Suite Results" > "$md_path"
+            echo "All suites passed." >> "$md_path"
+          fi
+          exit 0
+          BPFEOF
+          chmod +x "$GITHUB_WORKSPACE/fake-bin/bpfcompat"
+
+      - name: Create fake suite YAML file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/test-inputs"
+          cat > "$GITHUB_WORKSPACE/test-inputs/suite.yaml" << 'EOF'
+          suites:
+            - name: example-suite
+              artifact: prog.bpf.o
+              matrix: matrix.yaml
+          EOF
+
+      - name: Run action in suite mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "fake-bin/bpfcompat"
+          suite: "test-inputs/suite.yaml"
+          suite-out: "test-outputs/suite-report.json"
+          suite-markdown: "test-outputs/suite-report.md"
+
+      - name: Assert action succeeded and suite report was created
+        run: |
+          echo "Checking suite report file exists..."
+          if [ ! -f "$GITHUB_WORKSPACE/test-outputs/suite-report.json" ]; then
+            echo "FAIL: expected suite report file not found at test-outputs/suite-report.json"
+            exit 1
+          fi
+          echo "Suite report contents:"
+          cat "$GITHUB_WORKSPACE/test-outputs/suite-report.json"
+          echo ""
+          echo "Checking suite markdown file exists..."
+          if [ ! -f "$GITHUB_WORKSPACE/test-outputs/suite-report.md" ]; then
+            echo "FAIL: expected suite markdown file not found at test-outputs/suite-report.md"
+            exit 1
+          fi
+          echo "PASS: action succeeded in suite mode and reports were created"

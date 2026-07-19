@@ -1,0 +1,67 @@
+name: Test single artifact mode success
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary that writes a report
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/fake-bin"
+          cat > "$GITHUB_WORKSPACE/fake-bin/bpfcompat" << 'BPFEOF'
+          #!/bin/bash
+          echo "fake bpfcompat called with: $*"
+          # Parse --out argument and write a fake JSON report
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --out)
+                out_path="$2"
+                shift 2
+                ;;
+              *)
+                shift
+                ;;
+            esac
+          done
+          if [[ -n "${out_path:-}" ]]; then
+            mkdir -p "$(dirname "$out_path")"
+            echo '{"status":"pass","targets":[]}' > "$out_path"
+          fi
+          exit 0
+          BPFEOF
+          chmod +x "$GITHUB_WORKSPACE/fake-bin/bpfcompat"
+
+      - name: Create fake artifact and matrix files
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/test-inputs"
+          # Create a minimal fake .bpf.o file (just needs to exist)
+          echo "fake eBPF object" > "$GITHUB_WORKSPACE/test-inputs/prog.bpf.o"
+          cat > "$GITHUB_WORKSPACE/test-inputs/matrix.yaml" << 'EOF'
+          targets:
+            - name: test-target
+              kernel: "6.1"
+          EOF
+
+      - name: Run action in single-artifact mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "fake-bin/bpfcompat"
+          artifact: "test-inputs/prog.bpf.o"
+          matrix: "test-inputs/matrix.yaml"
+          out: "test-outputs/report.json"
+
+      - name: Assert action succeeded and report was created
+        run: |
+          echo "Checking report file exists..."
+          if [ ! -f "$GITHUB_WORKSPACE/test-outputs/report.json" ]; then
+            echo "FAIL: expected report file not found at test-outputs/report.json"
+            exit 1
+          fi
+          echo "Report contents:"
+          cat "$GITHUB_WORKSPACE/test-outputs/report.json"
+          echo "PASS: action succeeded and report was created"
