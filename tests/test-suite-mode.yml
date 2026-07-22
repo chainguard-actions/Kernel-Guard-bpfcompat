@@ -1,0 +1,96 @@
+name: Test suite mode with fake binary
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create suite fixture and fake binary
+        run: |
+          # Create a fake suite YAML
+          mkdir -p "$GITHUB_WORKSPACE/tests/fixtures"
+          cat > "$GITHUB_WORKSPACE/tests/fixtures/suite.yaml" << 'EOF'
+          name: test-suite
+          artifacts:
+            - path: tests/fixtures/test.bpf.o
+              matrix: tests/fixtures/matrix.yaml
+          EOF
+
+          # Create a fake .bpf.o artifact and matrix referenced by suite
+          echo "fake bpf object" > "$GITHUB_WORKSPACE/tests/fixtures/test.bpf.o"
+          cat > "$GITHUB_WORKSPACE/tests/fixtures/matrix.yaml" << 'EOF'
+          targets:
+            - name: test-target
+              kernel: "6.1"
+          EOF
+
+          # Create a fake bpfcompat binary that handles 'suite' subcommand
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'SCRIPT'
+          #!/bin/sh
+          echo "bpfcompat invoked with args: $*" >&2
+          # Parse --out for suite output path
+          out=""
+          markdown=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            fi
+            if [ "$prev" = "--markdown" ]; then
+              markdown="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"status":"ok","suites":[]}' > "$out"
+          fi
+          if [ -n "$markdown" ]; then
+            mkdir -p "$(dirname "$markdown")"
+            echo "# bpfcompat Suite Results" > "$markdown"
+            echo "All tests passed." >> "$markdown"
+          fi
+          exit 0
+          SCRIPT
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+      - name: Run action in suite mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          binary: "./bin/bpfcompat"
+          suite: "tests/fixtures/suite.yaml"
+          suite-out: "tests/fixtures/suite-report.json"
+          suite-markdown: "tests/fixtures/suite-report.md"
+          timeout: "30s"
+          concurrency: "1"
+
+      - name: Assert suite report was created
+        run: |
+          SUITE_REPORT="$GITHUB_WORKSPACE/tests/fixtures/suite-report.json"
+          echo "Checking for suite report at: $SUITE_REPORT"
+          if [ ! -f "$SUITE_REPORT" ]; then
+            echo "FAIL: expected suite report file was not created at $SUITE_REPORT"
+            exit 1
+          fi
+          echo "Suite report contents:"
+          cat "$SUITE_REPORT"
+          echo ""
+          echo "PASS: suite report file was created successfully"
+
+      - name: Assert suite markdown was created
+        run: |
+          SUITE_MD="$GITHUB_WORKSPACE/tests/fixtures/suite-report.md"
+          echo "Checking for suite markdown at: $SUITE_MD"
+          if [ ! -f "$SUITE_MD" ]; then
+            echo "FAIL: expected suite markdown file was not created at $SUITE_MD"
+            exit 1
+          fi
+          echo "Suite markdown contents:"
+          cat "$SUITE_MD"
+          echo ""
+          echo "PASS: suite markdown file was created successfully"

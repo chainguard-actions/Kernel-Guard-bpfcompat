@@ -1,0 +1,68 @@
+name: Test single-artifact mode with fake binary
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create test fixtures and fake binary
+        run: |
+          # Create a fake .bpf.o artifact
+          mkdir -p "$GITHUB_WORKSPACE/tests/fixtures"
+          echo "fake bpf object" > "$GITHUB_WORKSPACE/tests/fixtures/test.bpf.o"
+
+          # Create a fake matrix YAML
+          cat > "$GITHUB_WORKSPACE/tests/fixtures/matrix.yaml" << 'EOF'
+          targets:
+            - name: test-target
+              kernel: "6.1"
+          EOF
+
+          # Create a fake bpfcompat binary that records its args and exits 0
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'SCRIPT'
+          #!/bin/sh
+          echo "bpfcompat invoked with args: $*" >&2
+          # Write a minimal JSON report to the --out path
+          out=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"status":"ok","targets":[]}' > "$out"
+          fi
+          exit 0
+          SCRIPT
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+      - name: Run action in single-artifact mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          binary: "./bin/bpfcompat"
+          artifact: "tests/fixtures/test.bpf.o"
+          matrix: "tests/fixtures/matrix.yaml"
+          out: "tests/fixtures/report.json"
+          timeout: "30s"
+          concurrency: "1"
+
+      - name: Assert report was created
+        run: |
+          REPORT="$GITHUB_WORKSPACE/tests/fixtures/report.json"
+          echo "Checking for report at: $REPORT"
+          if [ ! -f "$REPORT" ]; then
+            echo "FAIL: expected report file was not created at $REPORT"
+            exit 1
+          fi
+          echo "Report contents:"
+          cat "$REPORT"
+          echo ""
+          echo "PASS: report file was created successfully"
