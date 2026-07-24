@@ -1,0 +1,52 @@
+name: Test built-in matrix resolution
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up fake make and fake bpfcompat binary that records arguments
+        run: |
+          printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/make
+          chmod +x /usr/local/bin/make
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          printf '#!/bin/sh\n' > "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'if [ "$1" = "test" ]; then\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  echo "fake bpfcompat called with: $*" > /tmp/bpfcompat-matrix-args.txt\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'fi\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'prev=""\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'for arg in "$@"; do\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  if [ "$prev" = "--out" ]; then\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '    mkdir -p "$(dirname "$arg")"\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '    printf '"'"'{"targets":[],"passed":0,"failed":0}'"'"' > "$arg"\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  fi\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  prev="$arg"\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'done\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'exit 0\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+          touch /tmp/test.bpf.o
+      - name: Run action with built-in matrix name 'dev-one'
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          artifact: "/tmp/test.bpf.o"
+          matrix: "dev-one"
+          out: "/tmp/bpfcompat-matrix-report.json"
+      - name: Assert action resolved built-in matrix and invoked bpfcompat
+        run: |
+          echo "Checking bpfcompat was called with a resolved matrix path..."
+          if [ ! -f /tmp/bpfcompat-matrix-args.txt ]; then
+            echo "FAIL: bpfcompat was not called (args file not found)"
+            exit 1
+          fi
+          ARGS="$(cat /tmp/bpfcompat-matrix-args.txt)"
+          echo "bpfcompat args: $ARGS"
+          if ! echo "$ARGS" | grep -q "matrices/dev-one.yaml"; then
+            echo "FAIL: expected built-in matrix path 'matrices/dev-one.yaml' in bpfcompat invocation"
+            echo "Got: $ARGS"
+            exit 1
+          fi
+          echo "PASS: bpfcompat was called with the resolved built-in matrix path"

@@ -1,0 +1,51 @@
+name: Test command mode invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up fake make and fake bpfcompat binary that records arguments
+        run: |
+          printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/make
+          chmod +x /usr/local/bin/make
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          printf '#!/bin/sh\n' > "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'if [ "$1" = "test" ]; then\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  echo "fake bpfcompat called with: $*" > /tmp/bpfcompat-args.txt\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'fi\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'prev=""\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'for arg in "$@"; do\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  if [ "$prev" = "--out" ]; then\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '    mkdir -p "$(dirname "$arg")"\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '    printf '"'"'{"targets":[],"passed":0,"failed":0}'"'"' > "$arg"\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  fi\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf '  prev="$arg"\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'done\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'exit 0\n' >> "$GITHUB_WORKSPACE/bin/bpfcompat"
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+          printf 'name: test\nprofiles:\n  - id: ubuntu-22.04-5.15\n    required: true\n' > /tmp/test-matrix.yaml
+      - name: Run action in command mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          command: "echo hello"
+          matrix: "/tmp/test-matrix.yaml"
+          out: "/tmp/bpfcompat-cmd-report.json"
+      - name: Assert action invoked bpfcompat with command flag
+        run: |
+          echo "Checking bpfcompat was called..."
+          if [ ! -f /tmp/bpfcompat-args.txt ]; then
+            echo "FAIL: bpfcompat was not called (args file not found)"
+            exit 1
+          fi
+          ARGS="$(cat /tmp/bpfcompat-args.txt)"
+          echo "bpfcompat args: $ARGS"
+          if ! echo "$ARGS" | grep -q -- "--command"; then
+            echo "FAIL: expected --command flag in bpfcompat invocation"
+            exit 1
+          fi
+          echo "PASS: bpfcompat was called with --command flag"

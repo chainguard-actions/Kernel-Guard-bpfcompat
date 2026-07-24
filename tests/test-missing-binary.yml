@@ -1,0 +1,34 @@
+name: Test missing binary error
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up fake make (no-op) so build step does not fail if triggered
+        run: |
+          printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/make
+          chmod +x /usr/local/bin/make
+      - name: Run action expecting failure due to missing binary
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          artifact: "some-artifact.bpf.o"
+          matrix: "dev-one"
+          out: "/tmp/bpfcompat-report.json"
+          binary: "/tmp/bpfcompat-nonexistent-binary"
+        continue-on-error: true
+      - name: Assert action failed with binary-not-found error
+        if: always()
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected action to fail when binary is missing, got outcome=$OUTCOME"
+            exit 1
+          fi
+          echo "PASS: action correctly failed when binary was not found"

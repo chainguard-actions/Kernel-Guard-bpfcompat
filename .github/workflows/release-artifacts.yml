@@ -66,8 +66,9 @@ jobs:
           fi
           COMMIT="$(git rev-parse --short=12 HEAD)"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SAFE_VERSION="$(printf '%s' "$VERSION" | tr -d '\n\r')"
           {
-            echo "version=$VERSION"
+            echo "version=$SAFE_VERSION"
             echo "commit=$COMMIT"
             echo "build_date=$BUILD_DATE"
           } >> "$GITHUB_OUTPUT"
