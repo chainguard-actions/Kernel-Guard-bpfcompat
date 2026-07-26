@@ -1,0 +1,74 @@
+name: Test command mode with fake binary
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and matrix
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that records its arguments and exits 0
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" <<'EOF'
+          #!/bin/sh
+          echo "bpfcompat invoked with args: $*"
+          # Verify --command flag is present
+          found_command=0
+          for arg in "$@"; do
+            if [ "$arg" = "--command" ]; then
+              found_command=1
+            fi
+          done
+          if [ "$found_command" = "0" ]; then
+            echo "ERROR: --command flag not found in args"
+            exit 1
+          fi
+          # Write a minimal JSON report to --out path
+          out=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"targets":[],"pass":true}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal matrix YAML
+          cat > /tmp/matrix.yaml <<'EOF'
+          targets: []
+          EOF
+
+          # Ensure output directory exists
+          mkdir -p /tmp/bpfcompat-reports
+
+      - name: Run action in command mode with fake binary
+        id: action
+        uses: .
+        continue-on-error: false
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          command: "echo hello"
+          matrix: "/tmp/matrix.yaml"
+          out: "/tmp/bpfcompat-reports/out.json"
+
+      - name: Assert action succeeded
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected command mode action to succeed, got: $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: command mode action succeeded"

@@ -1,0 +1,74 @@
+name: Test suite mode with fake binary
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that handles the suite subcommand
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" <<'EOF'
+          #!/bin/sh
+          echo "bpfcompat invoked with args: $*"
+          # In suite mode, write a minimal JSON report to --out path
+          out=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"suites":[],"pass":true}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal suite YAML
+          mkdir -p /tmp/bpfcompat-suite
+          cat > /tmp/bpfcompat-suite/suite.yaml <<'EOF'
+          suites: []
+          EOF
+
+          # Ensure output directories exist
+          mkdir -p /tmp/bpfcompat-suite/reports
+
+      - name: Run action in suite mode with fake binary
+        id: action
+        uses: .
+        continue-on-error: false
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          suite: "/tmp/bpfcompat-suite/suite.yaml"
+          suite-out: "/tmp/bpfcompat-suite/reports/suite.json"
+          suite-markdown: "/tmp/bpfcompat-suite/reports/suite.md"
+
+      - name: Assert action succeeded
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected suite mode action to succeed with valid inputs and fake binary, got: $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: suite mode action succeeded"
+
+      - name: Assert suite output report was written
+        run: |
+          if [ ! -f /tmp/bpfcompat-suite/reports/suite.json ]; then
+            echo "FAIL: expected suite output report at /tmp/bpfcompat-suite/reports/suite.json"
+            exit 1
+          fi
+          echo "Suite report contents:"
+          cat /tmp/bpfcompat-suite/reports/suite.json
+          echo "PASS: suite output report exists"

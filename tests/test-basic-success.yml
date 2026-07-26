@@ -1,0 +1,76 @@
+name: Test basic success with fake binary
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, artifact, matrix, and output dir
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that records its arguments and exits 0
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" <<'EOF'
+          #!/bin/sh
+          echo "bpfcompat invoked with args: $*"
+          # In test mode, write a minimal JSON report to --out path
+          out=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"targets":[],"pass":true}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal .bpf.o artifact (just an empty file for path resolution)
+          touch /tmp/prog.bpf.o
+
+          # Create a minimal matrix YAML
+          cat > /tmp/matrix.yaml <<'EOF'
+          targets: []
+          EOF
+
+          # Ensure output directory exists
+          mkdir -p /tmp/bpfcompat-reports
+
+      - name: Run action in single-artifact mode with fake binary
+        id: action
+        uses: .
+        continue-on-error: false
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "/tmp/prog.bpf.o"
+          matrix: "/tmp/matrix.yaml"
+          out: "/tmp/bpfcompat-reports/out.json"
+
+      - name: Assert action succeeded
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed with valid inputs and fake binary, got: $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: action succeeded"
+
+      - name: Assert output report was written
+        run: |
+          if [ ! -f /tmp/bpfcompat-reports/out.json ]; then
+            echo "FAIL: expected output report at /tmp/bpfcompat-reports/out.json"
+            exit 1
+          fi
+          echo "Report contents:"
+          cat /tmp/bpfcompat-reports/out.json
+          echo "PASS: output report exists"
