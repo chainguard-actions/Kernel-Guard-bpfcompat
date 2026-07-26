@@ -1,0 +1,47 @@
+name: Test command mode invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          # Fake bpfcompat: print args and exit 0
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+      - name: Create fake matrix file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/tests/fixtures"
+          cat > "$GITHUB_WORKSPACE/tests/fixtures/matrix.yaml" << 'EOF'
+          targets: []
+          EOF
+
+      - id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          command: "echo hello"
+          matrix: "tests/fixtures/matrix.yaml"
+          out: "reports/test-out.json"
+
+      - name: Assert action succeeded in command mode
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed in command mode"
+            exit 1
+          fi
+          echo "PASS: action succeeded in command mode"

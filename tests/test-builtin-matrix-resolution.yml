@@ -1,0 +1,47 @@
+name: Test builtin matrix name resolution
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          # Fake bpfcompat: print args and exit 0
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+      - name: Create fake artifact file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/tests/fixtures"
+          touch "$GITHUB_WORKSPACE/tests/fixtures/test.bpf.o"
+
+      - id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          artifact: "tests/fixtures/test.bpf.o"
+          # 'dev-one' is a bare name that does not exist in the caller repo
+          # but exists as action/matrices/dev-one.yaml — should be resolved automatically
+          matrix: "dev-one"
+          out: "reports/test-out.json"
+
+      - name: Assert action succeeded (builtin matrix resolved)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed when using builtin matrix name 'dev-one'"
+            exit 1
+          fi
+          echo "PASS: action correctly resolved builtin matrix name 'dev-one'"
