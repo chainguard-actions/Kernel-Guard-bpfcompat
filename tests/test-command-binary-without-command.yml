@@ -1,0 +1,48 @@
+name: Test command-binary without command error
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and command-binary
+        run: |
+          mkdir -p bin
+          cat > bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x bin/bpfcompat
+          # Create a fake loader binary
+          cat > /tmp/fake-loader << 'EOF'
+          #!/bin/sh
+          echo "fake loader"
+          exit 0
+          EOF
+          chmod +x /tmp/fake-loader
+
+      - name: Run action expecting failure (command-binary without command)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          command-binary: "/tmp/fake-loader"
+          matrix: "dev-one"
+          out: "/tmp/bpfcompat-out.json"
+        continue-on-error: true
+
+      - name: Assert action failed due to command-binary without command
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected action to fail when command-binary is set without command, but outcome was: $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: action correctly failed when command-binary was set without command"

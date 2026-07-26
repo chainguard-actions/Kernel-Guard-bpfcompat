@@ -1,0 +1,83 @@
+name: Test bpfcompat suite mode invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p bin
+          cat > bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          # Record all arguments to a file for later inspection
+          echo "$*" > /tmp/bpfcompat-suite-args.txt
+          echo "fake bpfcompat called with: $*"
+          # Create a fake suite output file if --out is specified
+          for i in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              mkdir -p "$(dirname "$i")"
+              echo '{"suites":[]}' > "$i"
+            fi
+            prev="$i"
+          done
+          exit 0
+          EOF
+          chmod +x bin/bpfcompat
+          # Create a minimal suite YAML file
+          mkdir -p /tmp/bpfcompat-suite
+          cat > /tmp/bpfcompat-suite/test-suite.yaml << 'SUITE'
+          name: test-suite
+          artifacts: []
+          SUITE
+
+      - name: Run action in suite mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          suite: "/tmp/bpfcompat-suite/test-suite.yaml"
+          suite-out: "/tmp/bpfcompat-suite-out.json"
+          suite-markdown: "/tmp/bpfcompat-suite-out.md"
+          timeout: "60s"
+          concurrency: "1"
+        continue-on-error: true
+
+      - name: Assert binary was invoked with suite subcommand
+        run: |
+          if [ ! -f /tmp/bpfcompat-suite-args.txt ]; then
+            echo "FAIL: bpfcompat was never called (args file not found)"
+            exit 1
+          fi
+          ARGS="$(cat /tmp/bpfcompat-suite-args.txt)"
+          echo "bpfcompat args: $ARGS"
+
+          # Verify the 'suite' subcommand was used
+          if ! echo "$ARGS" | grep -q "suite"; then
+            echo "FAIL: expected 'suite' subcommand in args: $ARGS"
+            exit 1
+          fi
+
+          # Verify --suite flag was passed
+          if ! echo "$ARGS" | grep -q "\-\-suite"; then
+            echo "FAIL: expected --suite flag in args: $ARGS"
+            exit 1
+          fi
+
+          # Verify --out flag was passed
+          if ! echo "$ARGS" | grep -q "\-\-out"; then
+            echo "FAIL: expected --out flag in args: $ARGS"
+            exit 1
+          fi
+
+          # Verify --timeout flag was passed
+          if ! echo "$ARGS" | grep -q "\-\-timeout"; then
+            echo "FAIL: expected --timeout flag in args: $ARGS"
+            exit 1
+          fi
+
+          echo "PASS: bpfcompat was invoked with suite subcommand and expected arguments"

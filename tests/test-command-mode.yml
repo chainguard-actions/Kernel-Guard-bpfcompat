@@ -1,0 +1,69 @@
+name: Test bpfcompat command mode invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary
+        run: |
+          mkdir -p bin
+          cat > bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          # Record all arguments to a file for later inspection
+          echo "$*" > /tmp/bpfcompat-cmd-args.txt
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x bin/bpfcompat
+
+      - name: Run action in command mode
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          command: "echo hello"
+          matrix: "dev-one"
+          out: "/tmp/bpfcompat-cmd-out.json"
+          timeout: "60s"
+          concurrency: "1"
+        continue-on-error: true
+
+      - name: Assert binary was invoked with command flag
+        run: |
+          if [ ! -f /tmp/bpfcompat-cmd-args.txt ]; then
+            echo "FAIL: bpfcompat was never called (args file not found)"
+            exit 1
+          fi
+          ARGS="$(cat /tmp/bpfcompat-cmd-args.txt)"
+          echo "bpfcompat args: $ARGS"
+
+          # Verify the 'test' subcommand was used
+          if ! echo "$ARGS" | grep -q "test"; then
+            echo "FAIL: expected 'test' subcommand in args: $ARGS"
+            exit 1
+          fi
+
+          # Verify --command flag was passed
+          if ! echo "$ARGS" | grep -q "\-\-command"; then
+            echo "FAIL: expected --command flag in args: $ARGS"
+            exit 1
+          fi
+
+          # Verify --matrix flag was passed
+          if ! echo "$ARGS" | grep -q "\-\-matrix"; then
+            echo "FAIL: expected --matrix flag in args: $ARGS"
+            exit 1
+          fi
+
+          # Verify --out flag was passed
+          if ! echo "$ARGS" | grep -q "\-\-out"; then
+            echo "FAIL: expected --out flag in args: $ARGS"
+            exit 1
+          fi
+
+          echo "PASS: bpfcompat was invoked in command mode with expected arguments"

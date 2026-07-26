@@ -1,0 +1,40 @@
+name: Test missing artifact and command error
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create a fake bpfcompat binary
+        run: |
+          mkdir -p bin
+          cat > bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x bin/bpfcompat
+
+      - name: Run action expecting failure (no artifact or command)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          matrix: "dev-one"
+          out: "/tmp/bpfcompat-out.json"
+        continue-on-error: true
+
+      - name: Assert action failed due to missing artifact and command
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "FAIL: expected action to fail when neither artifact nor command is provided, but outcome was: $OUTCOME"
+            exit 1
+          fi
+          echo "PASS: action correctly failed when artifact and command were both missing"
