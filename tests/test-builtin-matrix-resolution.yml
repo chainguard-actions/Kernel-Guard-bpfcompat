@@ -1,0 +1,63 @@
+name: Test built-in matrix name resolution
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and artifact
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake binary that records its args and exits 0
+          printf '#!/bin/sh\necho "ARGS: $*" > /tmp/bpfcompat-matrix-args.txt\necho "fake bpfcompat called with: $*"\nexit 0\n' \
+            > "$GITHUB_WORKSPACE/bin/bpfcompat"
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a fake .bpf.o artifact
+          touch "$GITHUB_WORKSPACE/test.bpf.o"
+
+      - name: Run action with built-in matrix name (dev-one)
+        id: action
+        uses: .
+        continue-on-error: true
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          artifact: "test.bpf.o"
+          matrix: "dev-one"
+          out: "reports/out.json"
+          timeout: "60s"
+          concurrency: "1"
+
+      - name: Assert bpfcompat was invoked with resolved matrix path
+        run: |
+          echo "Checking bpfcompat was called with resolved built-in matrix..."
+          if [ ! -f /tmp/bpfcompat-matrix-args.txt ]; then
+            echo "FAIL: bpfcompat was not called (args file not found)"
+            exit 1
+          fi
+          ARGS="$(cat /tmp/bpfcompat-matrix-args.txt)"
+          echo "args: $ARGS"
+
+          # Verify 'test' subcommand was used
+          if ! echo "$ARGS" | grep -q "test"; then
+            echo "FAIL: expected 'test' subcommand in args"
+            exit 1
+          fi
+
+          # Verify --matrix flag was passed with a resolved path containing 'dev-one'
+          if ! echo "$ARGS" | grep -q -- "--matrix"; then
+            echo "FAIL: expected --matrix flag in args"
+            exit 1
+          fi
+
+          # Verify the matrix path contains 'dev-one' (resolved from built-in)
+          if ! echo "$ARGS" | grep -q "dev-one"; then
+            echo "FAIL: expected 'dev-one' in resolved matrix path"
+            exit 1
+          fi
+
+          echo "PASS: bpfcompat was called with correctly resolved built-in matrix path"

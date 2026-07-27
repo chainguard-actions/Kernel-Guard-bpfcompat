@@ -1,0 +1,68 @@
+name: Test suite mode command construction
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake binary that records its args and exits 0
+          printf '#!/bin/sh\necho "ARGS: $*" > /tmp/bpfcompat-suite-args.txt\necho "fake bpfcompat called with: $*"\nexit 0\n' \
+            > "$GITHUB_WORKSPACE/bin/bpfcompat"
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a minimal suite YAML
+          mkdir -p "$GITHUB_WORKSPACE/suites"
+          printf 'name: test-suite\ncases: []\n' > "$GITHUB_WORKSPACE/suites/test-suite.yaml"
+
+      - name: Run action in suite mode
+        id: action
+        uses: .
+        continue-on-error: true
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          suite: "suites/test-suite.yaml"
+          timeout: "60s"
+          concurrency: "1"
+
+      - name: Assert bpfcompat was invoked in suite mode
+        run: |
+          echo "Checking bpfcompat was called in suite mode..."
+          if [ ! -f /tmp/bpfcompat-suite-args.txt ]; then
+            echo "FAIL: bpfcompat was not called (args file not found)"
+            exit 1
+          fi
+          ARGS="$(cat /tmp/bpfcompat-suite-args.txt)"
+          echo "args: $ARGS"
+
+          # Verify 'suite' subcommand was used (not 'test')
+          if ! echo "$ARGS" | grep -q "suite"; then
+            echo "FAIL: expected 'suite' subcommand in args"
+            exit 1
+          fi
+
+          # Verify --suite flag was passed
+          if ! echo "$ARGS" | grep -q -- "--suite"; then
+            echo "FAIL: expected --suite flag in args"
+            exit 1
+          fi
+
+          # Verify --out flag was passed (suite-out)
+          if ! echo "$ARGS" | grep -q -- "--out"; then
+            echo "FAIL: expected --out flag in args"
+            exit 1
+          fi
+
+          # Verify --timeout flag was passed
+          if ! echo "$ARGS" | grep -q -- "--timeout"; then
+            echo "FAIL: expected --timeout flag in args"
+            exit 1
+          fi
+
+          echo "PASS: bpfcompat was called in suite mode with correct arguments"

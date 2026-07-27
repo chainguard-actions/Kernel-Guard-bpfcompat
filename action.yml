@@ -1,0 +1,434 @@
+name: BPFCompat eBPF Compatibility Gate
+author: Kernel Guard
+description: Validate eBPF .bpf.o artifacts across Linux kernel profiles and fail CI on compatibility regressions.
+inputs:
+  suite:
+    description: Optional suite YAML. When set, the action runs bpfcompat suite instead of single-artifact mode.
+    required: false
+    default: ""
+  artifact:
+    description: "Local path to a compiled .bpf.o artifact, or a remote OCI reference the CLI pulls (for example ghcr.io/org/gadget:latest, host:port/repo, or an @sha256: digest)."
+    required: false
+    default: ""
+  command:
+    description: "Command-mode validation: shell command run as root inside each kernel VM; the per-kernel verdict is its exit code. Use instead of (or alongside) artifact to validate via your project's own loader binary. Exposes $BPFCOMPAT_BIN, $BPFCOMPAT_ARTIFACT, and $BPFCOMPAT_REMOTE_ROOT."
+    required: false
+    default: ""
+  command-binary:
+    description: Local loader executable shipped into each guest and exposed to command as $BPFCOMPAT_BIN.
+    required: false
+    default: ""
+  command-expect-exit:
+    description: Exit code that counts as a pass in command mode.
+    required: false
+    default: "0"
+  disk-resize:
+    description: "Grow each guest overlay disk by N GiB before boot (cloud-init growpart expands it). Use for command-mode lanes that install a toolchain or build inside near-full cloud images. 0 (default) leaves the image size unchanged."
+    required: false
+    default: "0"
+  matrix:
+    description: "Path to matrix YAML. A bare name (for example quirk-library) that does not exist in the caller repository resolves to the matching matrices/<name>.yaml shipped with the action."
+    required: false
+    default: ""
+  out:
+    description: Path to JSON report output.
+    required: false
+    default: ""
+  suite-out:
+    description: Path to suite JSON summary output when suite mode is used.
+    required: false
+    default: "reports/bpfcompat-suite.json"
+  suite-markdown:
+    description: Path to suite Markdown summary output when suite mode is used.
+    required: false
+    default: "reports/bpfcompat-suite.md"
+  manifest:
+    description: Path to manifest YAML.
+    required: false
+    default: ""
+  validation-mode:
+    description: "Optional single-artifact validation mode: load_only, load_attach, or behavior. Suite mode should set validation_mode inside the suite YAML."
+    required: false
+    default: ""
+  markdown:
+    description: Path to Markdown report output.
+    required: false
+    default: ""
+  timeout:
+    description: Per-target timeout (for example 180s, 8m).
+    required: false
+    default: "180s"
+  workdir:
+    description: Working directory root.
+    required: false
+    default: ".bpfcompat"
+  concurrency:
+    description: Maximum concurrent VM jobs.
+    required: false
+    default: "2"
+  keep-vm-on-failure:
+    description: Keep VM overlays/logs on target failure.
+    required: false
+    default: "false"
+  build:
+    description: Build ./bin/bpfcompat with make before running tests.
+    required: false
+    default: "true"
+  prebuilt:
+    description: Use prebuilt release binaries when the action is pinned to a release tag or to a commit SHA that matches a release tag ("auto"), or always build from source ("never"). Downloads are checksum-verified against the release SHA256SUMS.
+    required: false
+    default: "auto"
+  binary:
+    description: Path to bpfcompat binary. Relative paths are resolved from the caller repository root.
+    required: false
+    default: "./bin/bpfcompat"
+runs:
+  using: composite
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Download prebuilt binaries
+      id: prebuilt
+      if: ${{ inputs.prebuilt != 'never' }}
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+        GITHUB_API_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        echo "resolved=false" >> "$GITHUB_OUTPUT"
+        ref="${ACTION_REF:-}"
+        if [[ "$ref" =~ ^[0-9a-f]{40}$ ]] && command -v jq >/dev/null 2>&1; then
+          # Pinned by commit SHA (the recommended way to pin third-party
+          # actions). Resolve the commit to the release tag that points at it
+          # so SHA-pinned consumers still get prebuilt binaries instead of
+          # silently requiring libbpf build deps on the runner. Any API
+          # hiccup or no matching tag falls through to the source build.
+          tags_json="$(curl -fsSL --retry 2 \
+            -H "Authorization: Bearer ${GITHUB_API_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Kernel-Guard/bpfcompat/tags?per_page=100" || true)"
+          resolved_tag="$(printf '%s' "$tags_json" \
+            | jq -r --arg sha "$ref" \
+              '[.[] | select(.commit.sha == $sha) | .name | select(test("^v[0-9]"))][0] // empty' \
+            2>/dev/null || true)"
+          if [[ -n "$resolved_tag" ]]; then
+            echo "Commit ${ref} is release ${resolved_tag}; using its prebuilt binaries."
+            ref="$resolved_tag"
+          fi
+        fi
+        if [[ ! "$ref" =~ ^v[0-9] ]]; then
+          echo "Action not pinned to a release tag (ref: ${ref:-none}); building from source."
+          exit 0
+        fi
+        if [[ "$(uname -m)" != "x86_64" ]]; then
+          echo "No prebuilt binaries for $(uname -m); building from source."
+          exit 0
+        fi
+
+        base="https://github.com/Kernel-Guard/bpfcompat/releases/download/${ref}"
+        tmp="$(mktemp -d)"
+        for asset in bpfcompat-linux-amd64 bpfcompat-validator-static-linux-amd64 SHA256SUMS; do
+          if ! curl -fsSL --retry 2 -o "$tmp/$asset" "$base/$asset"; then
+            echo "Release asset $asset not available for ${ref}; building from source."
+            exit 0
+          fi
+        done
+        # A failed verification is a hard error, not a fallback: assets exist
+        # but do not match what the release workflow published.
+        (cd "$tmp" && sha256sum -c SHA256SUMS)
+
+        mkdir -p "$GITHUB_ACTION_PATH/bin" "$GITHUB_ACTION_PATH/validator/c-libbpf/bin"
+        install -m 0755 "$tmp/bpfcompat-linux-amd64" "$GITHUB_ACTION_PATH/bin/bpfcompat"
+        install -m 0755 "$tmp/bpfcompat-validator-static-linux-amd64" "$GITHUB_ACTION_PATH/validator/c-libbpf/bin/bpfcompat-validator"
+        echo "resolved=true" >> "$GITHUB_OUTPUT"
+        echo "Using prebuilt release binaries for ${ref}."
+    - name: Build bpfcompat
+      if: ${{ inputs.build == 'true' && steps.prebuilt.outputs.resolved != 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "${GITHUB_ACTION_PATH:-}" ]]; then
+          echo "::error::GITHUB_ACTION_PATH is not set"
+          exit 1
+        fi
+
+        pushd "$GITHUB_ACTION_PATH" >/dev/null
+        make build
+        make validator-static
+        popd >/dev/null
+    - name: Run bpfcompat
+      shell: bash
+      env:
+        # All inputs go through the environment, never inline interpolation,
+        # so they cannot inject host-side shell syntax.
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_COMMAND_BINARY: ${{ inputs.command-binary }}
+        INPUT_COMMAND_EXPECT_EXIT: ${{ inputs.command-expect-exit }}
+        INPUT_ARTIFACT: ${{ inputs.artifact }}
+        INPUT_MATRIX: ${{ inputs.matrix }}
+        INPUT_OUT: ${{ inputs.out }}
+        INPUT_MANIFEST: ${{ inputs.manifest }}
+        INPUT_MARKDOWN: ${{ inputs.markdown }}
+        INPUT_WORKDIR: ${{ inputs.workdir }}
+        INPUT_SUITE: ${{ inputs.suite }}
+        INPUT_SUITE_OUT: ${{ inputs.suite-out }}
+        INPUT_SUITE_MARKDOWN: ${{ inputs.suite-markdown }}
+        INPUT_BINARY: ${{ inputs.binary }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+        INPUT_DISK_RESIZE: ${{ inputs.disk-resize }}
+        INPUT_VALIDATION_MODE: ${{ inputs.validation-mode }}
+        INPUT_KEEP_VM_ON_FAILURE: ${{ inputs.keep-vm-on-failure }}
+      run: |
+        set -euo pipefail
+
+        workspace="${GITHUB_WORKSPACE:-$PWD}"
+        action_root="${GITHUB_ACTION_PATH:-$PWD}"
+
+        resolve_path() {
+          local input="$1"
+          if [[ -z "$input" ]]; then
+            echo ""
+            return
+          fi
+          if [[ "$input" = /* ]]; then
+            echo "$input"
+          else
+            echo "$workspace/$input"
+          fi
+        }
+
+        # An artifact is either a local .bpf.o path or a remote OCI reference
+        # the CLI pulls itself (ghcr.io/org/gadget:latest, host:port/repo,
+        # localhost/..., or an @sha256: digest). A remote ref must bypass path
+        # resolution and the local-file existence check below — otherwise it is
+        # mangled into "$workspace/ghcr.io/..." and rejected as "not found".
+        # Host detection follows the OCI/Docker rule: the segment before the
+        # first "/" is a registry host if it contains "." or ":" or is localhost.
+        is_remote_artifact() {
+          local a="$1"
+          case "$a" in
+            *://* | *@sha256:*) return 0 ;;
+          esac
+          local first="${a%%/*}"
+          case "$first" in
+            "" | "." | "..") return 1 ;;
+            localhost | localhost:*) return 0 ;;
+          esac
+          if [[ "$a" == */* && ( "$first" == *.* || "$first" == *:* ) ]]; then
+            return 0
+          fi
+          return 1
+        }
+
+        artifact_input="$INPUT_ARTIFACT"
+        artifact_is_remote=false
+        if [[ -n "$artifact_input" ]] && is_remote_artifact "$artifact_input"; then
+          artifact_path="$artifact_input"
+          artifact_is_remote=true
+        else
+          artifact_path="$(resolve_path "$artifact_input")"
+        fi
+        matrix_path="$(resolve_path "$INPUT_MATRIX")"
+        command_binary_path="$(resolve_path "$INPUT_COMMAND_BINARY")"
+
+        # Built-in matrix convenience: a bare name (e.g. quirk-library) that
+        # does not exist in the caller repo resolves to the matrices/ directory
+        # shipped with the action.
+        if [[ -n "$matrix_path" && ! -f "$matrix_path" ]]; then
+          matrix_input="$INPUT_MATRIX"
+          if [[ "$matrix_input" != /* && -f "$action_root/matrices/${matrix_input}.yaml" ]]; then
+            matrix_path="$action_root/matrices/${matrix_input}.yaml"
+          elif [[ "$matrix_input" != /* && -f "$action_root/$matrix_input" ]]; then
+            matrix_path="$action_root/$matrix_input"
+          fi
+        fi
+        out_path="$(resolve_path "$INPUT_OUT")"
+        manifest_path="$(resolve_path "$INPUT_MANIFEST")"
+        markdown_path="$(resolve_path "$INPUT_MARKDOWN")"
+        workdir_path="$(resolve_path "$INPUT_WORKDIR")"
+        suite_path="$(resolve_path "$INPUT_SUITE")"
+        suite_out_path="$(resolve_path "$INPUT_SUITE_OUT")"
+        suite_markdown_path="$(resolve_path "$INPUT_SUITE_MARKDOWN")"
+
+        binary_input="$INPUT_BINARY"
+        binary_path=""
+        if [[ "$binary_input" = /* ]]; then
+          binary_path="$binary_input"
+        elif [[ -x "$workspace/$binary_input" ]]; then
+          binary_path="$workspace/$binary_input"
+        elif [[ -x "$action_root/$binary_input" ]]; then
+          binary_path="$action_root/$binary_input"
+        elif [[ -x "$action_root/bin/bpfcompat" ]]; then
+          binary_path="$action_root/bin/bpfcompat"
+        fi
+
+        if [[ -z "$binary_path" || ! -x "$binary_path" ]]; then
+          echo "::error::bpfcompat binary not found or not executable. Checked: $workspace/$binary_input, $action_root/$binary_input, $action_root/bin/bpfcompat"
+          exit 1
+        fi
+
+        if [[ -n "$suite_path" ]]; then
+          if [[ ! -f "$suite_path" ]]; then
+            echo "::error::suite file not found: $suite_path"
+            exit 1
+          fi
+          mkdir -p "$(dirname "$suite_out_path")"
+          if [[ -n "$suite_markdown_path" ]]; then
+            mkdir -p "$(dirname "$suite_markdown_path")"
+          fi
+
+          pushd "$action_root" >/dev/null
+          cmd=(
+            "$binary_path"
+            suite
+            --suite "$suite_path"
+            --out "$suite_out_path"
+            --timeout "$INPUT_TIMEOUT"
+            --workdir "$workdir_path"
+            --concurrency "$INPUT_CONCURRENCY"
+          )
+          if [[ -n "$suite_markdown_path" ]]; then
+            cmd+=(--markdown "$suite_markdown_path")
+          fi
+
+          echo "Running: ${cmd[*]}"
+          set +e
+          "${cmd[@]}"
+          status=$?
+          set -e
+
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            if [[ -f "$suite_markdown_path" ]]; then
+              cat "$suite_markdown_path" >>"$GITHUB_STEP_SUMMARY" || echo "::warning::failed to write bpfcompat suite summary"
+            else
+              {
+                echo
+                echo "# bpfcompat Compatibility Suite"
+                echo
+                echo "Suite run did not produce a Markdown summary. Check the action logs for setup or runner errors."
+              } >>"$GITHUB_STEP_SUMMARY" || true
+            fi
+          fi
+
+          popd >/dev/null
+          exit "$status"
+        fi
+
+        if [[ -z "$artifact_path" && -z "$INPUT_COMMAND" ]]; then
+          echo "::error::artifact or command is required unless suite is set"
+          exit 1
+        fi
+        if [[ -z "$matrix_path" ]]; then
+          echo "::error::matrix is required unless suite is set"
+          exit 1
+        fi
+        if [[ -z "$out_path" ]]; then
+          echo "::error::out is required unless suite is set"
+          exit 1
+        fi
+
+        if [[ -n "$artifact_path" && "$artifact_is_remote" != true && ! -f "$artifact_path" ]]; then
+          echo "::error::artifact not found: $artifact_path"
+          exit 1
+        fi
+        if [[ -n "$command_binary_path" && ! -f "$command_binary_path" ]]; then
+          echo "::error::command-binary not found: $command_binary_path"
+          exit 1
+        fi
+        if [[ -n "$command_binary_path" && -z "$INPUT_COMMAND" ]]; then
+          echo "::error::command-binary requires command"
+          exit 1
+        fi
+        if [[ ! -f "$matrix_path" ]]; then
+          echo "::error::matrix not found: $matrix_path"
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$out_path")"
+        if [[ -n "$markdown_path" ]]; then
+          mkdir -p "$(dirname "$markdown_path")"
+        fi
+
+        pushd "$action_root" >/dev/null
+        cmd=(
+          "$binary_path"
+          test
+          --matrix "$matrix_path"
+          --out "$out_path"
+          --timeout "$INPUT_TIMEOUT"
+          --workdir "$workdir_path"
+          --concurrency "$INPUT_CONCURRENCY"
+        )
+
+        if [[ -n "$artifact_path" ]]; then
+          cmd+=(--artifact "$artifact_path")
+        fi
+        if [[ -n "$INPUT_COMMAND" ]]; then
+          cmd+=(--command "$INPUT_COMMAND")
+          if [[ -n "$command_binary_path" ]]; then
+            cmd+=(--command-binary "$command_binary_path")
+          fi
+          if [[ -n "$INPUT_COMMAND_EXPECT_EXIT" && "$INPUT_COMMAND_EXPECT_EXIT" != "0" ]]; then
+            cmd+=(--command-expect-exit "$INPUT_COMMAND_EXPECT_EXIT")
+          fi
+        fi
+        if [[ -n "$manifest_path" ]]; then
+          cmd+=(--manifest "$manifest_path")
+        fi
+        if [[ -n "$INPUT_DISK_RESIZE" && "$INPUT_DISK_RESIZE" != "0" ]]; then
+          cmd+=(--disk-resize "$INPUT_DISK_RESIZE")
+        fi
+        if [[ -n "$INPUT_VALIDATION_MODE" ]]; then
+          cmd+=(--validation-mode "$INPUT_VALIDATION_MODE")
+        fi
+        if [[ -n "$markdown_path" ]]; then
+          cmd+=(--markdown "$markdown_path")
+        fi
+        if [[ "$INPUT_KEEP_VM_ON_FAILURE" == "true" ]]; then
+          cmd+=(--keep-vm-on-failure=true)
+        fi
+
+        echo "Running: ${cmd[*]}"
+        set +e
+        "${cmd[@]}"
+        status=$?
+        set -e
+
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          if [[ -f "$out_path" ]]; then
+            {
+              echo
+              "$binary_path" report-summary --report "$out_path" --max-targets 25 --max-failures 10
+            } >>"$GITHUB_STEP_SUMMARY" || echo "::warning::failed to write bpfcompat job summary"
+          else
+            {
+              echo
+              echo "# bpfcompat Compatibility Gate"
+              echo
+              echo "Validation did not produce a JSON report. Check the action logs for setup or runner errors."
+            } >>"$GITHUB_STEP_SUMMARY" || true
+          fi
+        fi
+
+        popd >/dev/null
+        exit "$status"
+branding:
+  icon: shield
+  color: blue
