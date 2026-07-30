@@ -1,0 +1,53 @@
+name: Test built-in matrix name resolution
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Place a fake bpfcompat binary that records its arguments so we can
+      # assert the built-in matrix path is resolved correctly.
+      - name: Create fake bpfcompat binary and artifact
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat args: $*" | tee /tmp/bpfcompat-args.txt
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a fake artifact file
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          touch "$GITHUB_WORKSPACE/artifacts/test.bpf.o"
+
+      - name: Run action with built-in matrix name (quirk-library)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "artifacts/test.bpf.o"
+          # 'quirk-library' does not exist in the caller repo but is a built-in
+          # matrix shipped with the action at matrices/quirk-library.yaml
+          matrix: "quirk-library"
+          out: "/tmp/bpfcompat-out.json"
+        continue-on-error: true
+
+      - name: Assert built-in matrix was resolved correctly
+        run: |
+          echo "=== bpfcompat args ==="
+          cat /tmp/bpfcompat-args.txt || echo "(no args file found)"
+
+          # The resolved matrix path should point to the action's matrices/ directory,
+          # not to a non-existent path in the caller workspace.
+          if grep -q "matrices/quirk-library.yaml" /tmp/bpfcompat-args.txt; then
+            echo "PASS: built-in matrix name was resolved to the action's matrices/ directory"
+          else
+            echo "FAIL: built-in matrix name was not resolved correctly"
+            echo "Expected to find 'matrices/quirk-library.yaml' in args"
+            exit 1
+          fi

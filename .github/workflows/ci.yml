@@ -1,0 +1,172 @@
+name: ci
+
+# Quality gate for every push and pull request. The compatibility-gate
+# workflow (bpfcompat-example.yml) demonstrates running the action against
+# real VMs and stays opt-in; this workflow is the cheap, fast suite that
+# every PR must pass before merge:
+#   - go vet
+#   - golangci-lint against the new diff
+#   - go test -race -coverprofile
+#   - govulncheck against the pinned module set
+#   - go build for all targets
+#
+# Everything runs on the default GitHub-hosted ubuntu-latest runner so PRs
+# don't depend on the self-hosted KVM fleet to merge.
+#
+# Security note: every ${{ github.* }} interpolation in this file is in
+# a workflow-level position (concurrency, artifact name, etc.) and never
+# substituted into a "run:" shell block. None of github.event.*, head_ref,
+# or commit message fields are read here, so workflow-injection attacks
+# via PR titles or commit messages are not applicable to this file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.12"
+
+jobs:
+  test:
+    name: Test (-race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: go mod download
+        run: go mod download
+      - name: Validate action.yml parses
+        # The composite action ships by tag; a YAML syntax error (e.g. an
+        # unquoted colon in a description) breaks every consumer at "Set up
+        # job" with no way to patch the tag. Catch it before release.
+        run: python3 -c "import yaml,glob; [yaml.safe_load(open(f)) for f in ['action.yml'] + glob.glob('.github/workflows/*.yml')]; print('ok')"
+      - name: Lint GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+      - name: Action OCI-artifact detection regression
+        # Guards the fix that lets the action accept remote OCI references
+        # (ghcr.io/...) as `artifact`. Extracts is_remote_artifact() from
+        # action.yml and asserts its classification, so the v0.3.2 regression
+        # (OCI refs rejected as missing local files) cannot silently return.
+        run: bash scripts/action-artifact-ref-detection_test.sh
+      - name: Release-asset verification regression
+        run: bash scripts/verify-release-assets_test.sh
+      - name: Release-state fail-closed regression
+        run: bash scripts/check-release-state_test.sh
+      - name: Release metadata/channel regression
+        run: bash scripts/check-release-consistency_test.sh
+      - name: Release-channel promotion regression
+        run: bash scripts/promote-release_test.sh
+      - name: Candidate-promotion binding regression
+        run: bash scripts/verify-promotion-inputs_test.sh
+      - name: Production-environment protection regression
+        run: bash scripts/check-production-environment_test.sh
+      - name: Production CodeQL alert-gate regression
+        run: bash scripts/check-production-code-scanning_test.sh
+      - name: Production-readiness evidence regression
+        run: bash scripts/production-readiness-report_test.sh
+      - name: Coverage-floor regression
+        run: bash scripts/check-coverage_test.sh
+      - name: Release metadata consistency
+        run: make check-release-consistency
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -20
+      - name: Enforce coverage floor
+        run: bash scripts/check-coverage.sh coverage.out 50.0
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage.out
+          if-no-files-found: warn
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: golangci-lint (pull request diff)
+        if: github.event_name == 'pull_request'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.6.2
+          args: --timeout=5m --new-from-rev=origin/main
+      - name: Check push diff base
+        id: push-diff-base
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            echo "has_parent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_parent=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: golangci-lint (push diff)
+        if: github.event_name != 'pull_request' && steps.push-diff-base.outputs.has_parent == 'true'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.6.2
+          args: --timeout=5m --new-from-rev=HEAD~1
+      - name: golangci-lint (root commit bootstrap)
+        if: github.event_name != 'pull_request' && steps.push-diff-base.outputs.has_parent != 'true'
+        run: echo "Skipping diff lint because this checkout has no parent commit."
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: govulncheck
+        run: govulncheck ./...
+
+  build:
+    name: Build (Go side)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      # The C validator (validator/c-libbpf) needs libbpf-dev + clang on the
+      # builder which the example workflow already handles; here we only
+      # exercise the Go side so the CI gate stays portable.
+      - name: go build
+        run: go build ./...
+      # Standalone example module (own go.mod, so `go build ./...` skips it).
+      - name: go build (examples/ebpf-go-loader)
+        run: cd examples/ebpf-go-loader && CGO_ENABLED=0 go build ./...

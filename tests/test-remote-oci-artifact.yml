@@ -1,0 +1,54 @@
+name: Test remote OCI artifact reference
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Place a fake bpfcompat binary that records its arguments so we can
+      # assert the remote OCI ref is passed through correctly (not mangled
+      # into a local path like "$WORKSPACE/ghcr.io/...").
+      - name: Create fake bpfcompat binary and matrix
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat args: $*" | tee /tmp/bpfcompat-args.txt
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+      - name: Run action with remote OCI artifact reference
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "ghcr.io/example/my-gadget:latest"
+          matrix: "tests/fixtures/minimal-matrix.yaml"
+          out: "/tmp/bpfcompat-out.json"
+        continue-on-error: true
+
+      - name: Assert remote OCI ref was passed through correctly
+        run: |
+          echo "=== bpfcompat args ==="
+          cat /tmp/bpfcompat-args.txt || echo "(no args file found)"
+
+          # The remote OCI ref should appear verbatim in the args,
+          # NOT mangled into a local path like "/home/runner/.../ghcr.io/..."
+          if grep -q "ghcr.io/example/my-gadget:latest" /tmp/bpfcompat-args.txt; then
+            echo "PASS: remote OCI ref was passed through correctly"
+          else
+            echo "FAIL: remote OCI ref was not found in bpfcompat args"
+            exit 1
+          fi
+
+          # Ensure it was NOT mangled into a local path
+          if grep -q "/ghcr.io/" /tmp/bpfcompat-args.txt; then
+            echo "FAIL: remote OCI ref was incorrectly resolved as a local path"
+            exit 1
+          fi
+          echo "PASS: remote OCI ref was not mangled into a local path"

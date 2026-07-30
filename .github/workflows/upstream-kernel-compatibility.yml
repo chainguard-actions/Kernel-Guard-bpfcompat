@@ -1,0 +1,63 @@
+name: upstream-kernel-compatibility
+
+# Experimental upstream-mainline lane. It remains manual-only until a reliable
+# virtme-ng/KVM runner is provisioned; leaving a scheduled job queued for 24
+# hours is not compatibility evidence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      concurrency:
+        description: Target concurrency.
+        required: false
+        default: "1"
+permissions:
+  contents: read
+
+jobs:
+  upstream-kernel:
+    runs-on: [self-hosted, linux, x64, kvm]
+    timeout-minutes: 90
+    env:
+      VM_CONCURRENCY: ${{ github.event.inputs.concurrency || '1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify virtme-ng/KVM prerequisites
+        run: |
+          test -e /dev/kvm || (echo "::error::/dev/kvm not found" && exit 1)
+          command -v vng >/dev/null || (echo "::error::missing virtme-ng executable: vng" && exit 1)
+          command -v qemu-system-x86_64 >/dev/null || (echo "::error::missing qemu-system-x86_64" && exit 1)
+          command -v jq >/dev/null || (echo "::error::missing jq" && exit 1)
+
+      - name: Build validator and examples
+        run: |
+          make build
+          make validator-static
+          make examples
+
+      - name: Generate boot-aware upstream matrix
+        run: make upstream-kernel-runnable
+
+      - name: Run upstream-kernel compatibility
+        run: |
+          ./bin/bpfcompat test \
+            --runner virtme-ng \
+            --artifact examples/functional-execve/functional_execve.bpf.o \
+            --manifest examples/functional-execve/manifest-upstream-kernel.yaml \
+            --matrix matrices/upstream-kernel-runnable.yaml \
+            --out reports/functional-execve-upstream-kernel.json \
+            --markdown reports/functional-execve-upstream-kernel.md \
+            --timeout 20m \
+            --concurrency "${VM_CONCURRENCY}"
+
+      - name: Upload upstream-kernel evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: upstream-kernel-compatibility
+          path: |
+            reports/functional-execve-upstream-kernel.json
+            reports/functional-execve-upstream-kernel.md
+            matrices/upstream-kernel-runnable.yaml
+            .bpfcompat/runs/**

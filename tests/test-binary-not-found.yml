@@ -1,0 +1,29 @@
+name: Test binary not found
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run action (expect failure - binary not found)
+        id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat-does-not-exist"
+          artifact: "some-artifact.bpf.o"
+          matrix: "some-matrix.yaml"
+          out: "/tmp/bpfcompat-out.json"
+        continue-on-error: true
+
+      - name: Assert action failed as expected
+        run: |
+          echo "outcome: ${{ steps.action.outcome }}"
+          if [ "${{ steps.action.outcome }}" != "failure" ]; then
+            echo "FAIL: expected action to fail when binary is not found"
+            exit 1
+          fi
+          echo "PASS: action correctly failed when bpfcompat binary was not found"
