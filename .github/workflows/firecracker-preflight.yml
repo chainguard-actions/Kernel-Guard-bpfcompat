@@ -1,0 +1,32 @@
+name: firecracker-preflight
+
+# Firecracker executable proof. This uses a self-hosted x64 KVM runner for the
+# full Firecracker toolchain (Firecracker binary, busybox, cpio, uncompressed
+# guest kernel). The default QEMU lane runs on stock GitHub-hosted runners,
+# which now expose /dev/kvm (see bpfcompat-example-hosted.yml).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firecracker-preflight:
+    runs-on: [self-hosted, linux, x64, kvm]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify KVM
+        run: |
+          test -e /dev/kvm || (echo "::error::/dev/kvm not found" && exit 1)
+
+      - name: Install Firecracker release
+        run: make firecracker-install
+
+      - name: Run Firecracker preflight
+        run: make firecracker-preflight
+
+      - name: Run Firecracker validator proof
+        run: make acceptance-firecracker-dev-one

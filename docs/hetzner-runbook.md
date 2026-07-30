@@ -1,0 +1,138 @@
+# Hetzner demo runbook
+
+Move / host the public bpfcompat demo (`bpfcompat.kernelguard.net`) on a Hetzner
+bare-metal server. This replaces the Azure VM after the Azure credit expired.
+
+## Why bare metal (not Hetzner Cloud)
+
+The demo boots real x86 QEMU/KVM guests on each validation. **Hetzner Cloud
+(shared vCPU, dedicated vCPU, and ARM/CAX alike) does not expose nested
+virtualization**, so there is no `/dev/kvm` and QEMU silently falls back to TCG
+software emulation (~10x slower). Only a Hetzner **dedicated / Server Auction**
+host gives native KVM. The bootstrap script hard-fails if `/dev/kvm` is missing.
+
+## 0) Order the server (manual, your Hetzner account)
+
+1. Open the [Server Auction](https://www.hetzner.com/sb/) (no setup fee, prices
+   unaffected by the June 2026 adjustment). Use
+   [Server Radar](https://radar.iodev.org/) to filter.
+2. Pick any modern x86-64 box (e.g. Ryzen/EPYC, 32GB+ RAM, NVMe). All current
+   CPUs support VT-x/AMD-V; KVM works out of the box on bare metal.
+3. Install **Ubuntu 22.04 / 24.04 LTS** (via the install image or rescue
+   system). Add your SSH public key during install so `root` login works.
+4. Note the server's public IP -> `HETZNER_HOST`.
+
+## 1) Bootstrap toolchain + build + demo unit
+
+Installs the build toolchain and `qemu-kvm`, verifies `/dev/kvm`, builds
+`bpfcompat` + the static validator + examples, creates the `bpfcompat-demo`
+service user (in the `kvm` group), and installs the `bpfcompat-serve` systemd
+unit and `/etc/bpfcompat/serve.env` stub.
+
+```bash
+export HETZNER_HOST=<server-ip>
+# optional: export HETZNER_USER=root HETZNER_SSH_KEY=~/.ssh/id_ed25519
+make hetzner-bootstrap-vm
+```
+
+## 1b) Install the "Try our aegis sample" artifact
+
+The empty-state **"Try our aegis sample"** button serves
+`examples/aegis-live/aegis.bpf.o`. That object is **git-ignored** (we never
+commit built `.bpf.o`s), so a fresh checkout does not contain it and the
+`/api/v1/sample/aegis/artifact` endpoint 404s until you copy it out-of-band.
+
+Copy the sample to a path that survives re-provisioning (the state dir is not
+wiped by re-clones) and point the server at it via `BPFCOMPAT_SAMPLE_ARTIFACT`:
+
+```bash
+scp examples/aegis-live/aegis.bpf.o \
+  root@$HETZNER_HOST:/var/lib/bpfcompat-demo/sample-aegis.bpf.o
+ssh root@$HETZNER_HOST '
+  chown bpfcompat-demo:bpfcompat-demo /var/lib/bpfcompat-demo/sample-aegis.bpf.o
+  chmod 0644 /var/lib/bpfcompat-demo/sample-aegis.bpf.o
+  grep -q "^BPFCOMPAT_SAMPLE_ARTIFACT=" /etc/bpfcompat/serve.env \
+    && sed -i "s|^BPFCOMPAT_SAMPLE_ARTIFACT=.*|BPFCOMPAT_SAMPLE_ARTIFACT=/var/lib/bpfcompat-demo/sample-aegis.bpf.o|" /etc/bpfcompat/serve.env \
+    || echo "BPFCOMPAT_SAMPLE_ARTIFACT=/var/lib/bpfcompat-demo/sample-aegis.bpf.o" >> /etc/bpfcompat/serve.env'
+```
+
+(If the unit is already running, `systemctl restart bpfcompat-serve` after.)
+
+## 2) Set the write key and start the demo server
+
+The server binds `127.0.0.1:8080` only. Anonymous visitors may validate and read
+history; writes require the private key.
+
+```bash
+ssh root@$HETZNER_HOST \
+  "sudo sed -i \"s|^BPFCOMPAT_API_WRITE_KEY=.*|BPFCOMPAT_API_WRITE_KEY=$(openssl rand -hex 32)|\" /etc/bpfcompat/serve.env"
+ssh root@$HETZNER_HOST "sudo systemctl enable --now bpfcompat-serve.service"
+ssh root@$HETZNER_HOST "systemctl --no-pager status bpfcompat-serve.service"
+```
+
+## 3) Repoint DNS (Cloudflare)
+
+Update the `bpfcompat.kernelguard.net` `A` record from the old Azure IP
+(`20.91.218.19`) to `$HETZNER_HOST`. Keep it **DNS only (grey cloud)** so Caddy
+can complete the Let's Encrypt HTTP-01 challenge.
+
+## 4) Configure HTTPS + host firewall (Caddy + ufw)
+
+`ufw` opens only 22/80/443; the backend stays on `127.0.0.1:8080`.
+
+```bash
+export HETZNER_HOST=<server-ip>
+export BPFCOMPAT_DOMAIN=bpfcompat.kernelguard.net
+make hetzner-configure-tls
+```
+
+After completion:
+
+- UI:     `https://bpfcompat.kernelguard.net/`
+- Health: `https://bpfcompat.kernelguard.net/api/health`
+
+## 5) Verify, then decommission Azure
+
+```bash
+curl -fsS https://bpfcompat.kernelguard.net/api/health
+```
+
+Once green, tear down the Azure VM/resource group to stop any residual billing.
+
+## 6) Uptime monitoring
+
+Two layers — use both:
+
+**a) Self-hosted health watchdog (catches "process up but API hung").**
+Installs a systemd timer that probes `/api/health` every 2 minutes and restarts
+`bpfcompat-serve` if it is unhealthy after retries (and optionally posts to a
+webhook). This complements `Restart=on-failure`, which only reacts to a crashed
+process, not a hung one.
+
+```bash
+ssh root@$HETZNER_HOST '
+  install -m 0755 /opt/bpfcompat-src/scripts/healthcheck.sh /usr/local/bin/bpfcompat-healthcheck
+  install -m 0644 /opt/bpfcompat-src/packaging/systemd/bpfcompat-healthcheck.service /etc/systemd/system/
+  install -m 0644 /opt/bpfcompat-src/packaging/systemd/bpfcompat-healthcheck.timer /etc/systemd/system/
+  # optional alert webhook:
+  # printf "BPFCOMPAT_HEALTH_WEBHOOK=%s\n" "<slack/discord webhook>" > /etc/bpfcompat/healthcheck.env
+  systemctl daemon-reload
+  systemctl enable --now bpfcompat-healthcheck.timer
+  systemctl start bpfcompat-healthcheck.service   # run once now
+'
+```
+
+**b) External monitor (the real safety net — the box can't alert when it's down).**
+Point a free monitor at the public health URL (5-minute setup, no code):
+
+- URL: `https://bpfcompat.kernelguard.net/api/health` — expect HTTP `200`
+- Interval: 1–5 min; alert to email/Slack on failure
+- UptimeRobot, Better Stack, or Cloudflare Health Checks all work
+
+## Security notes
+
+- Backend never listens publicly: `--addr 127.0.0.1:8080` behind Caddy + `ufw`.
+- `BPFCOMPAT_API_ENABLE_RUNTIME_EXECUTE=false` -- no host eBPF loading on the demo.
+- Public reports are sanitized server-side (`internal/api/sanitize.go`); host
+  paths, `vm_run_dir`, `qemu_command`, and `serial_log` never reach the browser.
+- `.bpfcompat/runs/**` (per-run SSH keys) lives only under `/var/lib/bpfcompat-demo`.

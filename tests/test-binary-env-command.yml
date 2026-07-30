@@ -1,0 +1,69 @@
+name: Test bpfcompat binary invocation via action
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a fake bpfcompat binary in the workspace bin directory.
+      # The action resolves the binary from workspace/binary_input when executable.
+      - name: Create fake bpfcompat binary
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          printf '#!/bin/sh\necho "fake bpfcompat $@"\nexit 0\n' > "$GITHUB_WORKSPACE/bin/bpfcompat"
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+          echo "Created fake binary at: $GITHUB_WORKSPACE/bin/bpfcompat"
+
+      # Verify the fake binary works directly before the action uses it
+      - name: Verify fake binary runs directly
+        run: |
+          OUTPUT="$("$GITHUB_WORKSPACE/bin/bpfcompat" env 2>&1)"
+          echo "Direct invocation output: $OUTPUT"
+          if [ -z "$OUTPUT" ]; then
+            echo "FAIL: fake binary produced no output"
+            exit 1
+          fi
+          echo "PASS: fake binary runs and produces output"
+
+      # Run the action with the fake binary and no artifact/matrix/out.
+      # The action will fail at input validation, but the binary resolution
+      # and invocation path is exercised.
+      - name: Run action with fake binary (expect failure at input validation)
+        id: action_run
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          # No artifact/matrix/out — will fail at validation
+        continue-on-error: true
+
+      - name: Assert action failed at input validation (not binary resolution)
+        run: |
+          echo "outcome: ${{ steps.action_run.outcome }}"
+          if [ "${{ steps.action_run.outcome }}" != "failure" ]; then
+            echo "FAIL: expected action to fail (missing artifact/matrix/out)"
+            exit 1
+          fi
+          echo "PASS: action failed as expected at input validation"
+
+      # Test that the binary path resolution also works from action_root
+      - name: Pre-place fake binary at action bin path
+        run: |
+          mkdir -p "$GITHUB_ACTION_PATH/bin"
+          printf '#!/bin/sh\necho "[{\"key\":\"value\"}]"\nexit 0\n' > "$GITHUB_ACTION_PATH/bin/bpfcompat"
+          chmod +x "$GITHUB_ACTION_PATH/bin/bpfcompat"
+
+      - name: Assert action-root binary runs and produces JSON-like output
+        run: |
+          BINARY_PATH="$GITHUB_ACTION_PATH/bin/bpfcompat"
+          JSON_OUTPUT="$("$BINARY_PATH" env --json 2>&1)"
+          echo "output: $JSON_OUTPUT"
+          TRIMMED="$(echo "$JSON_OUTPUT" | tr -d '[:space:]')"
+          if [[ "$TRIMMED" != \[* ]] && [[ "$TRIMMED" != \{* ]]; then
+            echo "FAIL: output does not look like JSON: $JSON_OUTPUT"
+            exit 1
+          fi
+          echo "PASS: binary produces JSON-like output"

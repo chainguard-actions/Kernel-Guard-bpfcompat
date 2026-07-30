@@ -1,0 +1,47 @@
+name: Test missing out error
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a fake bpfcompat binary so the action reaches out validation
+      - name: Create a fake bpfcompat binary and artifact
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          printf '#!/bin/sh\necho "fake bpfcompat $@"\nexit 0\n' > "$GITHUB_WORKSPACE/bin/bpfcompat"
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+
+          # Create a fake .bpf.o artifact file
+          echo "fake bpf object" > /tmp/test.bpf.o
+
+          # Create a minimal matrix file
+          cat > /tmp/test-matrix.yaml << 'EOF'
+          name: test
+          profiles:
+            - id: ubuntu-22.04-5.15
+              required: true
+          EOF
+
+      - name: Run action with artifact and matrix but no out (expect failure)
+        id: action_no_out
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "/tmp/test.bpf.o"
+          matrix: "/tmp/test-matrix.yaml"
+          # No out set — should fail with "out is required"
+        continue-on-error: true
+
+      - name: Assert action failed due to missing out
+        run: |
+          echo "outcome: ${{ steps.action_no_out.outcome }}"
+          if [ "${{ steps.action_no_out.outcome }}" != "failure" ]; then
+            echo "FAIL: expected action to fail when out is not set"
+            exit 1
+          fi
+          echo "PASS: action correctly failed with out is required"

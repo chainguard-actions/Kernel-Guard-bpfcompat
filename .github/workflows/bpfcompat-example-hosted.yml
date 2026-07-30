@@ -1,0 +1,140 @@
+name: bpfcompat-example-hosted
+
+# Zero-infrastructure on-ramp: this runs the full QEMU VM compatibility gate on a
+# stock GitHub-hosted runner. No self-hosted runner is required. GitHub-hosted
+# Linux runners now expose /dev/kvm, so VM validation is hardware-accelerated;
+# if a runner ever lacks KVM, bpfcompat degrades to TCG software emulation
+# (correct results, slower) instead of failing.
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility-gate:
+    name: Compatibility Gate (hosted runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect compatibility-relevant changes
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          required=false
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            required=true
+          else
+            while IFS= read -r path; do
+              case "$path" in
+                cmd/*|internal/*|validator/*|examples/*|matrices/*|suites/*|vm/*|vendor/*|action.yml|Makefile|go.mod|go.sum|go.work|go.work.sum|.github/workflows/bpfcompat-example-hosted.yml)
+                  required=true
+                  break
+                  ;;
+              esac
+            done < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA")
+          fi
+          echo "required=$required" >> "$GITHUB_OUTPUT"
+          if [[ "$required" == "true" ]]; then
+            echo "Compatibility-relevant changes detected; running the VM gate."
+          else
+            echo "No compatibility-relevant changes detected; the VM gate is not required."
+          fi
+
+      - name: Report KVM acceleration status
+        if: steps.changes.outputs.required == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e /dev/kvm ]]; then
+            echo "::notice::/dev/kvm present - VM validation is hardware-accelerated."
+            # Some hosted images expose /dev/kvm but the runner user is not in
+            # the kvm group; loosen perms so QEMU can open it.
+            sudo chmod 0666 /dev/kvm || true
+            ls -l /dev/kvm || true
+          else
+            echo "::warning::/dev/kvm not found - falling back to TCG software emulation (slower, still correct)."
+          fi
+
+      - name: Install host dependencies
+        if: steps.changes.outputs.required == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils clang llvm libbpf-dev libelf-dev zlib1g-dev \
+            pkg-config jq
+
+      - name: Build validator and fixture artifacts
+        if: steps.changes.outputs.required == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make validator-static
+          make examples
+
+      - name: Fetch VM image for dev-one profile
+        if: steps.changes.outputs.required == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make vm-ubuntu-22
+
+      - name: Run bpfcompat action
+        if: steps.changes.outputs.required == 'true'
+        uses: ./
+        with:
+          suite: suites/dev-functional.yaml
+          suite-out: reports/ci-dev-functional-suite.json
+          suite-markdown: reports/ci-dev-functional-suite.md
+          # Short while we stabilize hosted-runner guest boot: a stuck VM fails
+          # in ~5m instead of burning the full budget on the SSH-ready wait.
+          timeout: 5m
+          concurrency: "1"
+          build: "true"
+
+      - name: Dump guest serial + validator output on failure
+        if: failure() && steps.changes.outputs.required == 'true'
+        shell: bash
+        run: |
+          echo "===== /dev/kvm ====="; ls -l /dev/kvm || true
+          while IFS= read -r -d '' f; do
+            echo "===== $f ====="
+            tail -n 120 "$f" || true
+          done < <(find .bpfcompat -type f \( -name serial.log -o -name qemu.log -o -name validator.stderr -o -name validator-result.json \) -print0 2>/dev/null)
+
+      - name: Upload reports
+        if: always() && steps.changes.outputs.required == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bpfcompat-reports-${{ github.run_id }}
+          if-no-files-found: warn
+          # Allowlist only — never `.bpfcompat/runs/**` wholesale: the per-run
+          # dir also holds the generated SSH private key (id_ed25519), the
+          # cloud-init seed, and the disk overlay, none of which belong in a
+          # downloadable artifact.
+          path: |
+            reports/ci-dev-functional-suite.json
+            reports/ci-dev-functional-suite.md
+            reports/suites/dev-functional/*.json
+            reports/suites/dev-functional/*.md
+            .bpfcompat/runs/**/targets/**/serial.log
+            .bpfcompat/runs/**/targets/**/qemu.log
+            .bpfcompat/runs/**/targets/**/libbpf.log
+            .bpfcompat/runs/**/targets/**/validator-result.json
+            .bpfcompat/runs/**/targets/**/validator.stderr
+            .bpfcompat/runs/**/targets/**/validator-exit-code
