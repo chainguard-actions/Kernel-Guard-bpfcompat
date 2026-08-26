@@ -1,0 +1,56 @@
+name: Test command-binary without command
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Provide a fake bpfcompat binary, a fake command-binary, and a fake matrix
+      # so the action reaches the command-binary validation logic.
+      - name: Install fake bpfcompat binary and loader
+        run: |
+          mkdir -p ./bin
+          cat > ./bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat: $*"
+          exit 0
+          EOF
+          chmod +x ./bin/bpfcompat
+          # Create a fake loader binary
+          cp ./bin/bpfcompat ./bin/my-loader
+          # Create a fake matrix file
+          cat > ./matrix.yaml << 'MATRIX'
+          targets:
+            - name: test-kernel
+              kernel: "5.15"
+          MATRIX
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          # command-binary is set but command is not — should trigger validation error
+          command-binary: "./bin/my-loader"
+          matrix: "./matrix.yaml"
+          out: "report.json"
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          # command intentionally omitted
+
+      - name: Assert action failed with command-binary requires command error
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action correctly failed when command-binary is set without command"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed but succeeded"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

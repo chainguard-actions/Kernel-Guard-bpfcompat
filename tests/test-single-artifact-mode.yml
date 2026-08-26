@@ -1,0 +1,65 @@
+name: Test single-artifact mode invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Set up a fake bpfcompat binary that records its arguments and exits 0,
+      # a fake artifact, and a fake matrix file.
+      - name: Install fake bpfcompat binary, artifact, and matrix
+        run: |
+          mkdir -p ./bin
+          cat > ./bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          # Record invocation arguments for inspection
+          echo "fake bpfcompat invoked with: $*" >&2
+          # In test subcommand mode, create the output file if --out is specified
+          out=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"status":"pass","targets":[]}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x ./bin/bpfcompat
+          # Create a fake .bpf.o artifact
+          touch ./test-artifact.bpf.o
+          # Create a fake matrix file
+          cat > ./matrix.yaml << 'MATRIX'
+          targets:
+            - name: test-kernel
+              kernel: "5.15"
+          MATRIX
+
+      - id: action
+        uses: .
+        with:
+          artifact: "test-artifact.bpf.o"
+          matrix: "./matrix.yaml"
+          out: "report.json"
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          timeout: "60s"
+          concurrency: "1"
+
+      - name: Assert action succeeded and report was created
+        run: |
+          echo "Checking report.json exists..."
+          if [ ! -f "report.json" ]; then
+            echo "FAIL: report.json was not created"
+            exit 1
+          fi
+          echo "report.json contents:"
+          cat report.json
+          echo "PASS: action succeeded and report was created"

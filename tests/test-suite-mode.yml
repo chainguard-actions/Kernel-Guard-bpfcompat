@@ -1,0 +1,79 @@
+name: Test suite mode invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Set up a fake bpfcompat binary that records its arguments and exits 0,
+      # and a fake suite YAML file.
+      - name: Install fake bpfcompat binary and suite file
+        run: |
+          mkdir -p ./bin
+          cat > ./bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat invoked with: $*" >&2
+          # In suite subcommand mode, create the output files if specified
+          out=""
+          md=""
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              out="$arg"
+            elif [ "$prev" = "--markdown" ]; then
+              md="$arg"
+            fi
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"status":"pass","suites":[]}' > "$out"
+          fi
+          if [ -n "$md" ]; then
+            mkdir -p "$(dirname "$md")"
+            echo "# bpfcompat Suite Results" > "$md"
+            echo "All suites passed." >> "$md"
+          fi
+          exit 0
+          EOF
+          chmod +x ./bin/bpfcompat
+          # Create a minimal suite YAML file
+          cat > ./suite.yaml << 'SUITE'
+          suites:
+            - name: example-suite
+              artifact: "test.bpf.o"
+              matrix: "default"
+          SUITE
+
+      - id: action
+        uses: .
+        with:
+          suite: "./suite.yaml"
+          suite-out: "reports/bpfcompat-suite.json"
+          suite-markdown: "reports/bpfcompat-suite.md"
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          timeout: "60s"
+          concurrency: "1"
+
+      - name: Assert action succeeded and suite report was created
+        run: |
+          echo "Checking reports/bpfcompat-suite.json exists..."
+          if [ ! -f "reports/bpfcompat-suite.json" ]; then
+            echo "FAIL: reports/bpfcompat-suite.json was not created"
+            exit 1
+          fi
+          echo "Suite report contents:"
+          cat reports/bpfcompat-suite.json
+          echo ""
+          echo "Checking reports/bpfcompat-suite.md exists..."
+          if [ ! -f "reports/bpfcompat-suite.md" ]; then
+            echo "FAIL: reports/bpfcompat-suite.md was not created"
+            exit 1
+          fi
+          echo "Suite markdown contents:"
+          cat reports/bpfcompat-suite.md
+          echo "PASS: action succeeded and suite reports were created"
