@@ -8,6 +8,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
+| research-v1 | [`research-v1`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/research-v1) | [`141c491`](https://github.com/Kernel-Guard/bpfcompat/commit/141c491bd1508600338e7bc27abbc5a117eb7508) |
 | v0.1.2 | [`v0.1.2`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.1.2) | [`e7fd186`](https://github.com/Kernel-Guard/bpfcompat/commit/e7fd186bfb106aba46bc8b9a66367be9f5036eab) |
 | v0.1.3 | [`v0.1.3`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.1.3) | [`1923453`](https://github.com/Kernel-Guard/bpfcompat/commit/19234532946eabc0cce8449a431b237c604c155a) |
 | v0.1.5 | [`v0.1.5`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.1.5) | [`27ed0ee`](https://github.com/Kernel-Guard/bpfcompat/commit/27ed0ee11099a409119c7c26f89431b2909d25ec) |
