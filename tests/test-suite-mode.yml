@@ -1,0 +1,56 @@
+name: Test suite mode with fake binary
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary and suite file
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that handles the suite subcommand
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Parse --out argument and create a minimal JSON suite report
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              mkdir -p "$(dirname "$arg")"
+              echo '{"suites":[],"pass":true}' > "$arg"
+            fi
+            prev="$arg"
+          done
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+          # Create a minimal suite YAML
+          cat > "$GITHUB_WORKSPACE/suite.yaml" << 'YAML'
+          suites:
+            - name: example
+              artifact: dummy.bpf.o
+              matrix: matrix.yaml
+          YAML
+
+      - id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          suite: "suite.yaml"
+          suite-out: "reports/bpfcompat-suite.json"
+
+      - name: Assert suite mode succeeded and suite report was created
+        run: |
+          echo "Checking suite report file exists..."
+          if [ ! -f "$GITHUB_WORKSPACE/reports/bpfcompat-suite.json" ]; then
+            echo "FAIL: expected suite report file reports/bpfcompat-suite.json was not created"
+            exit 1
+          fi
+          echo "Suite report contents:"
+          cat "$GITHUB_WORKSPACE/reports/bpfcompat-suite.json"
+          echo "PASS: suite mode succeeded and suite report file was created"

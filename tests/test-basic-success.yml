@@ -1,0 +1,59 @@
+name: Test basic success with fake binary
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, artifact, and matrix
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          # Fake bpfcompat that creates the output file and exits 0
+          cat > "$GITHUB_WORKSPACE/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Parse --out argument and create a minimal JSON report
+          prev=""
+          for arg in "$@"; do
+            if [ "$prev" = "--out" ]; then
+              mkdir -p "$(dirname "$arg")"
+              echo '{"targets":[],"pass":true}' > "$arg"
+            fi
+            prev="$arg"
+          done
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/bin/bpfcompat"
+          # Create a dummy .bpf.o artifact
+          touch "$GITHUB_WORKSPACE/dummy.bpf.o"
+          # Create a minimal matrix YAML
+          cat > "$GITHUB_WORKSPACE/matrix.yaml" << 'YAML'
+          targets:
+            - name: linux-5.15
+              kernel: "5.15"
+          YAML
+          mkdir -p "$GITHUB_WORKSPACE/reports"
+
+      - id: action
+        uses: .
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "bin/bpfcompat"
+          artifact: "dummy.bpf.o"
+          matrix: "matrix.yaml"
+          out: "reports/out.json"
+
+      - name: Assert action succeeded and report was created
+        run: |
+          echo "Checking report file exists..."
+          if [ ! -f "$GITHUB_WORKSPACE/reports/out.json" ]; then
+            echo "FAIL: expected report file reports/out.json was not created"
+            exit 1
+          fi
+          echo "Report contents:"
+          cat "$GITHUB_WORKSPACE/reports/out.json"
+          echo "PASS: action succeeded and report file was created"
