@@ -1,0 +1,45 @@
+name: Test artifact file not found
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Place a fake bpfcompat binary so the action reaches input validation
+      - name: Install fake bpfcompat binary
+        run: |
+          mkdir -p bin
+          cat > bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat: $*"
+          exit 0
+          EOF
+          chmod +x bin/bpfcompat
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          artifact: "nonexistent/path/to/artifact.bpf.o"
+          matrix: "dev-one"
+          out: "reports/out.json"
+
+      - name: Assert action failed with artifact not found error
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed as expected when artifact file does not exist"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed but succeeded"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

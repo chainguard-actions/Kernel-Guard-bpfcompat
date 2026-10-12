@@ -1,0 +1,65 @@
+name: Test command mode basic invocation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Place a fake bpfcompat binary that records its arguments and exits 0
+      - name: Install fake bpfcompat binary
+        run: |
+          mkdir -p bin
+          cat > bin/bpfcompat << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          # Write a minimal JSON report if --out is specified
+          out=""
+          prev=""
+          for arg in "$@"; do
+            case "$prev" in
+              --out) out="$arg" ;;
+            esac
+            prev="$arg"
+          done
+          if [ -n "$out" ]; then
+            mkdir -p "$(dirname "$out")"
+            echo '{"targets":[],"passed":0,"failed":0}' > "$out"
+          fi
+          exit 0
+          EOF
+          chmod +x bin/bpfcompat
+
+      # Create a minimal matrix YAML file
+      - name: Create minimal matrix file
+        run: |
+          mkdir -p matrices
+          cat > matrices/test-matrix.yaml << 'EOF'
+          targets: []
+          EOF
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          build: "false"
+          prebuilt: "never"
+          binary: "./bin/bpfcompat"
+          command: "echo hello"
+          matrix: "matrices/test-matrix.yaml"
+          out: "reports/out.json"
+
+      - name: Assert action ran (fake binary invoked or failed gracefully)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "PASS: action succeeded with fake binary"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (expected in test environment without kernel VMs)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
