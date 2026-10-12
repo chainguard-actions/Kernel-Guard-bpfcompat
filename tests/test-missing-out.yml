@@ -1,0 +1,56 @@
+name: Test missing out input
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, fake artifact, and fake matrix
+        run: |
+          # Create a fake bpfcompat binary so we reach input-validation logic
+          mkdir -p "$GITHUB_ACTION_PATH/bin"
+          cat > "$GITHUB_ACTION_PATH/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x "$GITHUB_ACTION_PATH/bin/bpfcompat"
+
+          # Create a fake .bpf.o artifact
+          echo "fake bpf object" > /tmp/test.bpf.o
+
+          # Create a fake matrix YAML
+          cat > /tmp/test-matrix.yaml << 'YAML'
+          kernels:
+            - name: test-kernel
+              image: fake-image:latest
+          YAML
+
+      - id: action
+        uses: .
+        with:
+          # artifact and matrix are set but out is not — should fail with a clear error
+          artifact: "/tmp/test.bpf.o"
+          matrix: "/tmp/test-matrix.yaml"
+          build: "false"
+          prebuilt: "never"
+          # out intentionally omitted
+        continue-on-error: true
+
+      - name: Assert action failed with missing out error
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action correctly failed when out was not provided"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed but succeeded"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

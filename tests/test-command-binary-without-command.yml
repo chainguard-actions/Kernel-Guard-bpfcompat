@@ -1,0 +1,65 @@
+name: Test command-binary without command fails
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary, fake loader binary, and fake matrix
+        run: |
+          # Create a fake bpfcompat binary
+          mkdir -p "$GITHUB_ACTION_PATH/bin"
+          cat > "$GITHUB_ACTION_PATH/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x "$GITHUB_ACTION_PATH/bin/bpfcompat"
+
+          # Create a fake loader binary (command-binary)
+          cat > /tmp/fake-loader << 'EOF'
+          #!/bin/sh
+          echo "fake loader called"
+          exit 0
+          EOF
+          chmod +x /tmp/fake-loader
+
+          # Create a fake matrix YAML
+          cat > /tmp/test-matrix.yaml << 'YAML'
+          kernels:
+            - name: test-kernel
+              image: fake-image:latest
+          YAML
+
+          # Create a fake artifact
+          echo "fake bpf object" > /tmp/test.bpf.o
+
+      - id: action
+        uses: .
+        with:
+          # command-binary is set but command is not — should fail with a clear error
+          artifact: "/tmp/test.bpf.o"
+          command-binary: "/tmp/fake-loader"
+          matrix: "/tmp/test-matrix.yaml"
+          out: "/tmp/bpfcompat-out.json"
+          build: "false"
+          prebuilt: "never"
+        continue-on-error: true
+
+      - name: Assert action failed because command-binary requires command
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action correctly failed when command-binary was set without command"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed but succeeded"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

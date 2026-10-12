@@ -1,0 +1,136 @@
+#!/bin/sh
+# bpfcompat one-command installer.
+#
+#   curl -fsSL https://raw.githubusercontent.com/Kernel-Guard/bpfcompat/main/scripts/install.sh | sh
+#
+# Downloads the prebuilt bpfcompat CLI and its static guest validator from the
+# GitHub release, requires cosign verification of the signed SHA256SUMS and
+# checks both binary hashes before installation. The validator goes
+# to a location the CLI discovers automatically, so `bpfcompat test` works from
+# any directory.
+#
+# Environment overrides:
+#   BPFCOMPAT_VERSION      release tag to install (default: latest)
+#   BPFCOMPAT_BIN_DIR      CLI install dir       (default: /usr/local/bin)
+#   BPFCOMPAT_LIBEXEC_DIR  validator install dir (default: /usr/local/libexec/bpfcompat)
+#   BPFCOMPAT_NO_VALIDATOR set to 1 to install the CLI only
+#
+# Only Linux/x86_64 is published today; the script exits clearly on anything else.
+set -eu
+
+REPO="Kernel-Guard/bpfcompat"
+BIN_DIR="${BPFCOMPAT_BIN_DIR:-/usr/local/bin}"
+LIBEXEC_DIR="${BPFCOMPAT_LIBEXEC_DIR:-/usr/local/libexec/bpfcompat}"
+
+err() { printf 'bpfcompat-install: %s\n' "$*" >&2; }
+die() { err "$*"; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+have curl || die "curl is required"
+if have sha256sum; then SHACHK="sha256sum -c"; elif have shasum; then SHACHK="shasum -a 256 -c"; else
+  die "need sha256sum or shasum to verify downloads"
+fi
+
+os="$(uname -s)"; arch="$(uname -m)"
+[ "$os" = "Linux" ] || die "unsupported OS '$os' (only Linux is published today)"
+case "$arch" in
+  x86_64|amd64) GOARCH=amd64 ;;
+  aarch64|arm64) GOARCH=arm64 ;;
+  *) die "unsupported arch '$arch' (published: x86_64, arm64; build from source: https://github.com/$REPO)";;
+esac
+CLI_ASSET="bpfcompat-linux-$GOARCH"
+VALIDATOR_ASSET="bpfcompat-validator-static-linux-$GOARCH"
+
+VERSION="${BPFCOMPAT_VERSION:-latest}"
+if [ "$VERSION" = "latest" ]; then
+  VERSION="$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest" \
+    | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  [ -n "$VERSION" ] || die "could not resolve the latest release tag"
+fi
+printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$' || die "invalid release version"
+base="https://github.com/$REPO/releases/download/$VERSION"
+err "installing bpfcompat $VERSION (linux/$GOARCH)"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cd "$tmp"
+
+DL_FILES="$CLI_ASSET"
+curl -fsSLO --retry 2 --connect-timeout 10 --max-time 300 "$base/$CLI_ASSET" || die "download failed: $CLI_ASSET ($VERSION)"
+curl -fsSLO --retry 2 --connect-timeout 10 --max-time 300 "$base/SHA256SUMS" || die "download failed: SHA256SUMS ($VERSION)"
+install_validator=1
+[ "${BPFCOMPAT_NO_VALIDATOR:-0}" = "1" ] && install_validator=0
+# The static C validator is published for amd64 only today. If this release has
+# no validator for the current arch, install the CLI without it rather than
+# failing - VM artifact validation then needs `make validator-static` locally or
+# command mode. (SHA256SUMS is integrity-checked below regardless.)
+if [ "$install_validator" = "1" ]; then
+  if grep -qE "^[0-9a-fA-F]{64}  ${VALIDATOR_ASSET}\$" SHA256SUMS; then
+    curl -fsSLO --retry 2 --connect-timeout 10 --max-time 300 "$base/$VALIDATOR_ASSET" || die "download failed: $VALIDATOR_ASSET ($VERSION)"
+    DL_FILES="$DL_FILES $VALIDATOR_ASSET"
+  else
+    install_validator=0
+    err "note: no prebuilt validator for $GOARCH in $VERSION - installing the CLI only."
+    err "      artifact-mode VM validation needs the validator: build it with"
+    err "      'make validator-static' on an $GOARCH host, or use command mode."
+  fi
+fi
+
+# 1. Cryptographic verification first. Checksums come from the same origin as
+#    the binaries, so they catch corruption but not a malicious mirror; the
+#    Sigstore signature over SHA256SUMS is what makes tampering detectable. When
+#    cosign is available we REQUIRE it to pass - a failed or unfetchable
+#    signature aborts the install (fail closed).
+if have cosign; then
+  curl -fsSLO --retry 2 --connect-timeout 10 --max-time 300 "$base/SHA256SUMS.sig" || die "cannot fetch SHA256SUMS.sig for signature verification"
+  curl -fsSLO --retry 2 --connect-timeout 10 --max-time 300 "$base/SHA256SUMS.crt" || die "cannot fetch SHA256SUMS.crt for signature verification"
+  if cosign verify-blob --certificate SHA256SUMS.crt --signature SHA256SUMS.sig \
+      --certificate-identity "https://github.com/$REPO/.github/workflows/release-artifacts.yml@refs/tags/$VERSION" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      SHA256SUMS >/dev/null 2>&1; then
+    err "cosign signature over SHA256SUMS verified"
+  else
+    die "cosign signature verification FAILED for SHA256SUMS - refusing to install"
+  fi
+else
+  die "cosign is required: checksum-only release installation is not permitted"
+fi
+
+# 2. Strict checksum check, scoped to exactly the files being installed. Every
+#    required file must have a matching entry in SHA256SUMS or we abort - no
+#    --ignore-missing, no error suppression, no silent pass.
+err "verifying checksums"
+: > .install-checklist
+for f in $DL_FILES; do
+  line="$(awk -v file="$f" '$2 == file && $1 ~ /^[0-9a-fA-F]{64}$/ {count++; found=$0} END {if(count == 1) print found; else exit 1}' SHA256SUMS)" || die "'$f' needs exactly one valid SHA256SUMS entry"
+  printf '%s\n' "$line" >> .install-checklist
+done
+$SHACHK .install-checklist >/dev/null || die "checksum verification failed for: $DL_FILES"
+err "checksums verified: $DL_FILES"
+
+# Install, using sudo only when the target dirs are not writable.
+SUDO=""
+if [ ! -w "$(dirname "$BIN_DIR")" ] || { [ -d "$BIN_DIR" ] && [ ! -w "$BIN_DIR" ]; }; then
+  if have sudo; then
+    SUDO="sudo"
+  else
+    die "no write access to $BIN_DIR and sudo not available (set BPFCOMPAT_BIN_DIR to a writable path)"
+  fi
+fi
+
+$SUDO install -d "$BIN_DIR"
+$SUDO install -m 0755 "$CLI_ASSET" "$BIN_DIR/bpfcompat"
+err "installed $BIN_DIR/bpfcompat"
+
+if [ "$install_validator" = "1" ]; then
+  $SUDO install -d "$LIBEXEC_DIR"
+  $SUDO install -m 0755 "$VALIDATOR_ASSET" "$LIBEXEC_DIR/bpfcompat-validator"
+  err "installed $LIBEXEC_DIR/bpfcompat-validator (auto-discovered by 'bpfcompat test')"
+fi
+
+printf '\n'
+"$BIN_DIR/bpfcompat" version || true
+printf '\nNext:\n'
+printf '  bpfcompat test --artifact <your.bpf.o> --quick        # needs a KVM-capable Linux host (qemu-system-x86_64)\n'
+printf '  bpfcompat test --artifact ghcr.io/org/gadget:tag --quick   # validate a published OCI gadget\n'
+printf 'Docs: https://github.com/%s\n' "$REPO"

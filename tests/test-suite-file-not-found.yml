@@ -1,0 +1,44 @@
+name: Test suite file not found error
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create fake bpfcompat binary
+        run: |
+          # Create a fake bpfcompat binary so we reach the suite-file validation
+          mkdir -p "$GITHUB_ACTION_PATH/bin"
+          cat > "$GITHUB_ACTION_PATH/bin/bpfcompat" << 'EOF'
+          #!/bin/sh
+          echo "fake bpfcompat called with: $*"
+          exit 0
+          EOF
+          chmod +x "$GITHUB_ACTION_PATH/bin/bpfcompat"
+
+      - id: action
+        uses: .
+        with:
+          # suite points to a non-existent file — should fail with a clear error
+          suite: "/tmp/nonexistent-suite.yaml"
+          build: "false"
+          prebuilt: "never"
+        continue-on-error: true
+
+      - name: Assert action failed with suite file not found error
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action correctly failed when suite file was not found"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed but succeeded"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
