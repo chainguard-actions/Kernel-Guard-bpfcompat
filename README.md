@@ -20,6 +20,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | v0.3.5 | [`v0.3.5`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.3.5) | [`59ea07d`](https://github.com/Kernel-Guard/bpfcompat/commit/59ea07d2216113e86c0c9a5514be4c5c2a21d90c) |
 | v0.3.6 | [`v0.3.6`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.3.6) | [`f1ba21f`](https://github.com/Kernel-Guard/bpfcompat/commit/f1ba21fd4e098d483961e9e9355a51ae78273422) |
 | v0.3.7 | [`v0.3.7`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.3.7) | [`179ff61`](https://github.com/Kernel-Guard/bpfcompat/commit/179ff612ed2b5d1afb16dd9c282752028d47c415) |
+| v0.3.8-rc.1 | [`v0.3.8-rc.1`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.3.8-rc.1) | [`39c06ec`](https://github.com/Kernel-Guard/bpfcompat/commit/39c06ece14e8a402fea18e2dc3cd2fc6dafbabd3) |
 | v0.4.0-rc.2 | [`v0.4.0-rc.2`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.4.0-rc.2) | [`ceddee9`](https://github.com/Kernel-Guard/bpfcompat/commit/ceddee960e997d0499edbe74c688f035dfa805f8) |
 | v0.4.0-rc.3 | [`v0.4.0-rc.3`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.4.0-rc.3) | [`cba1e09`](https://github.com/Kernel-Guard/bpfcompat/commit/cba1e09537f2e05e4ba7278efdb5c2d044d1889b) |
 
