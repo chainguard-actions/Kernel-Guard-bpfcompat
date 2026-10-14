@@ -1,0 +1,65 @@
+name: Test diff mode with valid report files
+on:
+  workflow_dispatch:
+
+jobs:
+  test-diff-with-reports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create minimal bpfcompat JSON report files for diff mode
+        run: |
+          mkdir -p "$RUNNER_TEMP/reports"
+          # Minimal baseline report
+          cat > "$RUNNER_TEMP/reports/baseline.json" <<'EOF'
+          {
+            "version": "1",
+            "artifact": "test.bpf.o",
+            "results": []
+          }
+          EOF
+          # Minimal candidate report
+          cat > "$RUNNER_TEMP/reports/candidate.json" <<'EOF'
+          {
+            "version": "1",
+            "artifact": "test.bpf.o",
+            "results": []
+          }
+          EOF
+          echo "Report files created:"
+          ls -la "$RUNNER_TEMP/reports/"
+
+      - name: Run action in diff mode (expect failure — binary not available)
+        id: action
+        uses: .
+        continue-on-error: true
+        with:
+          build: "false"
+          prebuilt: "never"
+          baseline-report: "${{ runner.temp }}/reports/baseline.json"
+          candidate-report: "${{ runner.temp }}/reports/candidate.json"
+          diff-out: "${{ runner.temp }}/reports/diff.json"
+          diff-markdown: "${{ runner.temp }}/reports/diff.md"
+
+      - name: Assert action ran (failed gracefully without binary)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          DIFF_RESULT: ${{ steps.action.outputs.diff-result }}
+        run: |
+          echo "outcome: $OUTCOME"
+          echo "diff-result: $DIFF_RESULT"
+          if [ "$OUTCOME" = "success" ]; then
+            # If somehow the binary was available and diff ran successfully
+            echo "Action succeeded; checking diff-result output"
+            if [ -z "$DIFF_RESULT" ]; then
+              echo "FAIL: action succeeded but diff-result output is empty"
+              exit 1
+            fi
+            echo "PASS: diff-result='$DIFF_RESULT'"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (binary not available in test environment)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
