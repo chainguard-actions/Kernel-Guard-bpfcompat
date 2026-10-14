@@ -24,6 +24,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | v0.3.8-rc.2 | [`v0.3.8-rc.2`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.3.8-rc.2) | [`baa57a7`](https://github.com/Kernel-Guard/bpfcompat/commit/baa57a764d4d5071b7dd9ff255d9c6d81ec2b65d) |
 | v0.4.0-rc.2 | [`v0.4.0-rc.2`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.4.0-rc.2) | [`ceddee9`](https://github.com/Kernel-Guard/bpfcompat/commit/ceddee960e997d0499edbe74c688f035dfa805f8) |
 | v0.4.0-rc.3 | [`v0.4.0-rc.3`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.4.0-rc.3) | [`cba1e09`](https://github.com/Kernel-Guard/bpfcompat/commit/cba1e09537f2e05e4ba7278efdb5c2d044d1889b) |
+| v0.4.0-rc.4 | [`v0.4.0-rc.4`](https://github.com/chainguard-actions/Kernel-Guard-bpfcompat/tree/v0.4.0-rc.4) | [`222c3f3`](https://github.com/Kernel-Guard/bpfcompat/commit/222c3f38a5361fca7c43c33df841290f8bef0021) |
 
 ## Privacy
 
